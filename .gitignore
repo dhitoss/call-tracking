@@ -1,0 +1,25 @@
+# Ignorar arquivos de ambiente virtual
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Ignorar arquivos de configuração sensíveis
+.env
+
+# Ignorar arquivos de dados e logs
+*.log
+*.sqlite
+data/
+
+# Ignorar arquivos de cache do Python
+.pytest_cache/
+.mypy_cache/
+.vscode/
+
+# Ignorar arquivos específicos do sistema
+test_system.py # Arquivo de teste gerado, não essencial para o código-fonte
+.tests/
+test_data.py
+test_performance.py
