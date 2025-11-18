@@ -1,427 +1,839 @@
 """
-Dashboard principal de Call Tracking.
-Interface Streamlit para visualização de métricas de chamadas.
+Call Tracking Dashboard v2.0
+Dashboard profissional com gerenciamento completo
 """
+
 import streamlit as st
 import pandas as pd
-from datetime import datetime, date
-import logging
-from typing import List, Optional
+from supabase import create_client, Client
+import os
+from datetime import datetime, timedelta
+import plotly.express as px
+import plotly.graph_objects as go
+from urllib.parse import urlencode
 
-from config import settings
-from services.database import get_database_service
-from services.metrics import MetricsService
-from utils.helpers import (
-    get_default_date_range,
-    get_current_and_previous_month,
-    get_month_name,
-    format_percentage,
-    apply_custom_css,
-    initialize_session_state,
-    display_data_table
-)
-from utils.charts import (
-    create_campaign_bar_chart,
-    create_state_pie_chart,
-    create_top_missed_chart,
-    create_top_answered_chart,
-    create_timeline_chart
-)
-from components.summary import render_executive_summary
+# ============================================================================
+# CONFIGURAÇÃO
+# ============================================================================
 
-
-# Configuração de logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-# Configuração da página
 st.set_page_config(
-    page_title="Call Tracker Dashboard",
+    page_title="Call Tracking Dashboard",
     page_icon="📞",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-
-# ==================== CACHING FUNCTIONS ====================
-
-@st.cache_resource
-def get_db_service():
-    """Retorna instância cached do serviço de banco."""
-    return get_database_service()
-
-
-@st.cache_data(ttl=settings.CACHE_TTL)
-def load_calls_data(
-    start_date: date,
-    end_date: date,
-    campaign_ids: Optional[List[str]] = None,
-    statuses: Optional[List[str]] = None
-) -> pd.DataFrame:
-    """
-    Carrega dados de chamadas com cache de 5 minutos.
-    
-    Args:
-        start_date: Data inicial
-        end_date: Data final
-        campaign_ids: IDs de campanhas para filtrar
-        statuses: Status para filtrar
-        
-    Returns:
-        DataFrame com chamadas
-    """
-    try:
-        db = get_db_service()
-        
-        data = db.get_calls(
-            start_date=start_date,
-            end_date=end_date,
-            campaign_ids=campaign_ids if campaign_ids else None,
-            statuses=statuses if statuses else None,
-            limit=10000
-        )
-        
-        if not data:
-            return pd.DataFrame()
-        
-        df = pd.DataFrame(data)
-        df['created_at'] = pd.to_datetime(df['created_at'], format='ISO8601')
-        
-        logger.info(f"✅ Loaded {len(df)} calls from database")
-        return df
-        
-    except Exception as e:
-        logger.error(f"❌ Error loading calls: {str(e)}")
-        st.error(f"Erro ao carregar dados: {str(e)}")
-        return pd.DataFrame()
-
-
-@st.cache_data(ttl=600)  # 10 min cache
-def get_available_campaigns() -> List[str]:
-    """Retorna lista de campanhas disponíveis."""
-    try:
-        db = get_db_service()
-        campaigns = db.get_unique_campaigns()
-        return campaigns
-    except Exception as e:
-        logger.error(f"❌ Error loading campaigns: {str(e)}")
-        return []
-
-
-# ==================== SIDEBAR FILTERS ====================
-
-def render_sidebar() -> dict:
-    """
-    Renderiza filtros na sidebar.
-    
-    Returns:
-        Dicionário com filtros selecionados
-    """
-    st.sidebar.title("📊 Filtros")
-    
-    # Date Range Picker
-    st.sidebar.subheader("Período")
-    default_start, default_end = get_default_date_range()
-    
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        start_date = st.date_input(
-            "Data Inicial",
-            value=default_start,
-            max_value=date.today()
-        )
-    with col2:
-        end_date = st.date_input(
-            "Data Final",
-            value=default_end,
-            max_value=date.today()
-        )
-    
-    # Campanhas
-    st.sidebar.subheader("Campanhas")
-    available_campaigns = get_available_campaigns()
-    
-    if available_campaigns:
-        selected_campaigns = st.sidebar.multiselect(
-            "Selecione as campanhas",
-            options=available_campaigns,
-            default=None,
-            placeholder="Todas as campanhas"
-        )
-    else:
-        selected_campaigns = []
-        st.sidebar.info("Nenhuma campanha encontrada")
-    
-    # Status
-    st.sidebar.subheader("Status")
-    all_statuses = [
-        'completed', 'no-answer', 'busy', 
-        'failed', 'ringing', 'in-progress'
-    ]
-    
-    status_labels = {
-        'completed': 'Atendida',
-        'no-answer': 'Não Atendida',
-        'busy': 'Ocupado',
-        'failed': 'Falhou',
-        'ringing': 'Tocando',
-        'in-progress': 'Em Andamento'
+# CSS customizado
+st.markdown("""
+<style>
+    .metric-card {
+        background-color: #f0f2f6;
+        padding: 20px;
+        border-radius: 10px;
+        border-left: 4px solid #1f77b4;
     }
+    .success-box {
+        background-color: #d4edda;
+        padding: 10px;
+        border-radius: 5px;
+        border-left: 4px solid #28a745;
+    }
+    .error-box {
+        background-color: #f8d7da;
+        padding: 10px;
+        border-radius: 5px;
+        border-left: 4px solid #dc3545;
+    }
+    .warning-box {
+        background-color: #fff3cd;
+        padding: 10px;
+        border-radius: 5px;
+        border-left: 4px solid #ffc107;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 24px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        padding: 10px 20px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Supabase
+SUPABASE_URL = os.getenv('SUPABASE_URL')
+SUPABASE_KEY = os.getenv('SUPABASE_KEY')
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    st.error("Configuração ausente: SUPABASE_URL e SUPABASE_KEY devem estar definidos nas variáveis de ambiente")
+    st.stop()
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# ============================================================================
+# FUNÇÕES AUXILIARES
+# ============================================================================
+
+@st.cache_data(ttl=60)
+def get_calls(days=30, status=None, campaign=None):
+    """Busca chamadas com cache"""
+    start_date = datetime.now() - timedelta(days=days)
+    query = supabase.table('calls').select('*').gte('created_at', start_date.isoformat())
     
-    selected_statuses = st.sidebar.multiselect(
-        "Selecione os status",
-        options=all_statuses,
-        format_func=lambda x: status_labels.get(x, x),
-        default=None,
-        placeholder="Todos os status"
-    )
+    if status and status != "Todos":
+        query = query.eq('status', status)
     
-    # Botão atualizar
-    st.sidebar.divider()
-    refresh_button = st.sidebar.button(
-        "🔄 Atualizar Dados",
-        use_container_width=True,
-        type="primary"
-    )
+    if campaign:
+        query = query.eq('campaign', campaign)
     
-    if refresh_button:
-        st.cache_data.clear()
-        st.session_state.last_refresh = datetime.now()
+    result = query.order('created_at', desc=True).execute()
+    return pd.DataFrame(result.data) if result.data else pd.DataFrame()
+
+@st.cache_data(ttl=60)
+def get_routes():
+    """Busca rotas com cache"""
+    result = supabase.table('phone_routing').select('*').order('created_at', desc=True).execute()
+    return result.data if result.data else []
+
+@st.cache_data(ttl=60)
+def get_tracking_sources():
+    """Busca tracking sources com cache"""
+    result = supabase.table('tracking_sources').select('*').execute()
+    return pd.DataFrame(result.data) if result.data else pd.DataFrame()
+
+def format_phone_br(phone):
+    """Formata número brasileiro"""
+    if not phone:
+        return ""
+    if phone.startswith('+55'):
+        clean = phone[3:]
+        if len(clean) == 11:
+            return f"({clean[:2]}) {clean[2:7]}-{clean[7:]}"
+        elif len(clean) == 10:
+            return f"({clean[:2]}) {clean[2:6]}-{clean[6:]}"
+    return phone
+
+def format_duration(seconds):
+    """Formata duração em segundos para MM:SS"""
+    if not seconds or seconds == 0:
+        return "00:00"
+    minutes = int(seconds // 60)
+    secs = int(seconds % 60)
+    return f"{minutes:02d}:{secs:02d}"
+
+def clear_cache():
+    """Limpa cache do Streamlit"""
+    st.cache_data.clear()
+
+# ============================================================================
+# SIDEBAR
+# ============================================================================
+
+st.sidebar.title("Call Tracking Dashboard")
+st.sidebar.markdown("---")
+
+page = st.sidebar.radio(
+    "Navegação",
+    [
+        "Dashboard Geral",
+        "Gerenciar Rotas",
+        "Chamadas",
+        "Gravações",
+        "Analytics Avançado",
+        "Tracking UTM",
+        "Configurações"
+    ]
+)
+
+st.sidebar.markdown("---")
+if st.sidebar.button("Atualizar Dados", use_container_width=True):
+    clear_cache()
+    st.rerun()
+
+st.sidebar.caption("v2.0.0 | Call Tracking System")
+
+# ============================================================================
+# PÁGINA: DASHBOARD GERAL
+# ============================================================================
+
+if page == "Dashboard Geral":
+    st.title("Dashboard Geral")
+    st.markdown("Visão consolidada do sistema de call tracking")
+    
+    # Filtros
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        period = st.selectbox("Período", [1, 7, 30, 90, 365], index=2, key="dash_period")
+    with col2:
+        auto_refresh = st.checkbox("Auto-refresh (60s)", value=False)
+    
+    if auto_refresh:
+        import time
+        time.sleep(60)
         st.rerun()
     
-    # Última atualização
-    if 'last_refresh' in st.session_state:
-        last_refresh = st.session_state.last_refresh
-        st.sidebar.caption(
-            f"Última atualização: {last_refresh.strftime('%H:%M:%S')}"
-        )
+    # Buscar dados
+    df = get_calls(days=period)
     
-    return {
-        'start_date': start_date,
-        'end_date': end_date,
-        'campaigns': selected_campaigns if selected_campaigns else None,
-        'statuses': selected_statuses if selected_statuses else None
+    if len(df) > 0:
+        # Métricas principais
+        st.subheader("Métricas Principais")
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        with col1:
+            st.metric("Total de Chamadas", len(df))
+        
+        with col2:
+            completed = len(df[df['status'] == 'completed'])
+            conversion_rate = (completed / len(df) * 100) if len(df) > 0 else 0
+            st.metric("Completadas", completed, f"{conversion_rate:.1f}%")
+        
+        with col3:
+            recorded = len(df[df['recording_url'].notna()])
+            st.metric("Gravadas", recorded)
+        
+        with col4:
+            if 'duration' in df.columns:
+                avg_duration = df[df['duration'] > 0]['duration'].mean()
+                st.metric("Duração Média", format_duration(avg_duration) if not pd.isna(avg_duration) else "00:00")
+        
+        with col5:
+            unique_callers = df['from_number'].nunique()
+            st.metric("Callers Únicos", unique_callers)
+        
+        # Gráficos principais
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Chamadas por Dia")
+            df['date'] = pd.to_datetime(df['created_at']).dt.date
+            daily = df.groupby('date').size().reset_index(name='calls')
+            fig = px.area(daily, x='date', y='calls', markers=True)
+            fig.update_layout(showlegend=False, height=300)
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            st.subheader("Status das Chamadas")
+            status_counts = df['status'].value_counts()
+            fig = px.pie(values=status_counts.values, names=status_counts.index, hole=0.4)
+            fig.update_layout(showlegend=True, height=300)
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Campanhas
+        if 'campaign' in df.columns:
+            st.subheader("Performance por Campanha")
+            campaign_df = df[df['campaign'].notna()].copy()
+            
+            if len(campaign_df) > 0:
+                campaign_stats = campaign_df.groupby('campaign').agg({
+                    'call_sid': 'count',
+                    'status': lambda x: (x == 'completed').sum(),
+                    'duration': 'mean'
+                }).reset_index()
+                
+                campaign_stats.columns = ['Campanha', 'Total', 'Completadas', 'Duração Média']
+                campaign_stats['Taxa de Conversão'] = (campaign_stats['Completadas'] / campaign_stats['Total'] * 100).round(1)
+                campaign_stats['Duração Média'] = campaign_stats['Duração Média'].apply(lambda x: format_duration(x) if not pd.isna(x) else "00:00")
+                
+                st.dataframe(
+                    campaign_stats.sort_values('Total', ascending=False),
+                    use_container_width=True,
+                    hide_index=True
+                )
+        
+        # Últimas chamadas
+        st.subheader("Últimas Chamadas (10 mais recentes)")
+        recent_df = df.head(10)[['created_at', 'from_number', 'to_number', 'status', 'duration', 'campaign']].copy()
+        recent_df['created_at'] = pd.to_datetime(recent_df['created_at']).dt.strftime('%d/%m/%Y %H:%M')
+        recent_df['duration'] = recent_df['duration'].apply(format_duration)
+        recent_df.columns = ['Data/Hora', 'Origem', 'Destino', 'Status', 'Duração', 'Campanha']
+        
+        st.dataframe(recent_df, use_container_width=True, hide_index=True)
+        
+    else:
+        st.info("Nenhuma chamada registrada no período selecionado")
+
+# ============================================================================
+# PÁGINA: GERENCIAR ROTAS
+# ============================================================================
+
+elif page == "Gerenciar Rotas":
+    st.title("Gerenciamento de Rotas")
+    st.markdown("Configure números rastreados e seus destinos")
+    
+    tab1, tab2, tab3 = st.tabs(["Rotas Ativas", "Adicionar Rota", "Importar em Lote"])
+    
+    # TAB 1: Listar rotas
+    with tab1:
+        routes = get_routes()
+        
+        # Filtros
+        col1, col2 = st.columns(2)
+        with col1:
+            filter_status = st.selectbox("Filtrar por Status", ["Todos", "Ativo", "Inativo"])
+        with col2:
+            filter_campaign = st.text_input("Filtrar por Campanha", "")
+        
+        # Aplicar filtros
+        filtered_routes = routes
+        if filter_status != "Todos":
+            filtered_routes = [r for r in filtered_routes if r['is_active'] == (filter_status == "Ativo")]
+        if filter_campaign:
+            filtered_routes = [r for r in filtered_routes if filter_campaign.lower() in str(r.get('campaign', '')).lower()]
+        
+        if filtered_routes:
+            st.write(f"**Total de rotas:** {len(filtered_routes)}")
+            
+            # Tabela de rotas
+            for i, route in enumerate(filtered_routes):
+                with st.container():
+                    col1, col2, col3, col4, col5, col6 = st.columns([2, 2, 2, 1, 1, 1])
+                    
+                    with col1:
+                        st.text(f"Rastreado\n{route['tracking_number']}")
+                    
+                    with col2:
+                        st.text(f"Destino\n{route['destination_number']}")
+                    
+                    with col3:
+                        campaign_text = route['campaign'] if route['campaign'] else "Genérica"
+                        st.text(f"Campanha\n{campaign_text}")
+                    
+                    with col4:
+                        status = "Ativo" if route['is_active'] else "Inativo"
+                        color = "🟢" if route['is_active'] else "🔴"
+                        st.text(f"Status\n{color} {status}")
+                    
+                    with col5:
+                        # Botão ativar/desativar
+                        if route['is_active']:
+                            if st.button("Desativar", key=f"deact_{route['id']}", use_container_width=True):
+                                supabase.table('phone_routing').update({'is_active': False}).eq('id', route['id']).execute()
+                                clear_cache()
+                                st.rerun()
+                        else:
+                            if st.button("Ativar", key=f"act_{route['id']}", use_container_width=True):
+                                supabase.table('phone_routing').update({'is_active': True}).eq('id', route['id']).execute()
+                                clear_cache()
+                                st.rerun()
+                    
+                    with col6:
+                        if st.button("Deletar", key=f"del_{route['id']}", use_container_width=True):
+                            supabase.table('phone_routing').delete().eq('id', route['id']).execute()
+                            clear_cache()
+                            st.success("Rota deletada")
+                            st.rerun()
+                    
+                    st.divider()
+        else:
+            st.info("Nenhuma rota encontrada com os filtros aplicados")
+    
+    # TAB 2: Adicionar rota
+    with tab2:
+        st.subheader("Adicionar Nova Rota")
+        
+        with st.form("add_route_form"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                tracking_number = st.text_input(
+                    "Número Rastreado (Twilio)",
+                    placeholder="+5511999990000",
+                    help="Número que receberá as chamadas"
+                )
+                
+                campaign = st.text_input(
+                    "Campanha",
+                    placeholder="google_ads",
+                    help="Deixe vazio para rota genérica (fallback)"
+                )
+            
+            with col2:
+                destination_number = st.text_input(
+                    "Número de Destino",
+                    placeholder="+5511888880000",
+                    help="Número para onde redirecionar"
+                )
+                
+                is_active = st.checkbox("Ativar imediatamente", value=True)
+            
+            submitted = st.form_submit_button("Adicionar Rota", use_container_width=True)
+            
+            if submitted:
+                errors = []
+                
+                if not tracking_number:
+                    errors.append("Número rastreado é obrigatório")
+                elif not tracking_number.startswith('+'):
+                    errors.append("Número rastreado deve começar com +")
+                
+                if not destination_number:
+                    errors.append("Número de destino é obrigatório")
+                elif not destination_number.startswith('+'):
+                    errors.append("Número de destino deve começar com +")
+                
+                if errors:
+                    for error in errors:
+                        st.error(error)
+                else:
+                    data = {
+                        'tracking_number': tracking_number,
+                        'destination_number': destination_number,
+                        'campaign': campaign if campaign else None,
+                        'is_active': is_active
+                    }
+                    
+                    try:
+                        supabase.table('phone_routing').insert(data).execute()
+                        clear_cache()
+                        st.success("Rota adicionada com sucesso!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao adicionar rota: {str(e)}")
+    
+    # TAB 3: Importar em lote
+    with tab3:
+        st.subheader("Importar Rotas em Lote")
+        st.markdown("Upload de arquivo CSV com as rotas")
+        
+        st.markdown("""
+        **Formato do CSV:**
+        ```
+        tracking_number,destination_number,campaign,is_active
+        +5511999990000,+5511888880000,google_ads,true
+        +5511999990001,+5511888880000,meta_ads,true
+        +5511999990002,+5511888880000,,true
+        ```
+        """)
+        
+        uploaded_file = st.file_uploader("Selecione o arquivo CSV", type=['csv'])
+        
+        if uploaded_file:
+            try:
+                import_df = pd.read_csv(uploaded_file)
+                
+                st.write("**Preview dos dados:**")
+                st.dataframe(import_df.head(), use_container_width=True)
+                
+                if st.button("Importar Rotas", use_container_width=True):
+                    success_count = 0
+                    error_count = 0
+                    
+                    for _, row in import_df.iterrows():
+                        try:
+                            data = {
+                                'tracking_number': row['tracking_number'],
+                                'destination_number': row['destination_number'],
+                                'campaign': row['campaign'] if pd.notna(row['campaign']) else None,
+                                'is_active': bool(row.get('is_active', True))
+                            }
+                            supabase.table('phone_routing').insert(data).execute()
+                            success_count += 1
+                        except Exception as e:
+                            error_count += 1
+                            st.error(f"Erro na linha {_}: {str(e)}")
+                    
+                    clear_cache()
+                    st.success(f"Importação concluída: {success_count} sucesso, {error_count} erros")
+                    
+            except Exception as e:
+                st.error(f"Erro ao ler arquivo: {str(e)}")
+
+# ============================================================================
+# PÁGINA: CHAMADAS
+# ============================================================================
+
+elif page == "Chamadas":
+    st.title("Histórico de Chamadas")
+    st.markdown("Visualize e analise todas as chamadas recebidas")
+    
+    # Filtros avançados
+    st.subheader("Filtros")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        period = st.selectbox("Período", [1, 7, 30, 90, 365], index=2, key="calls_period")
+    
+    with col2:
+        status_filter = st.selectbox("Status", ["Todos", "completed", "busy", "no-answer", "failed", "canceled"])
+    
+    with col3:
+        campaign_filter = st.text_input("Campanha", "")
+    
+    with col4:
+        search_number = st.text_input("Buscar Número", "")
+    
+    # Buscar chamadas
+    df = get_calls(days=period, status=status_filter, campaign=campaign_filter if campaign_filter else None)
+    
+    # Aplicar filtro de número
+    if search_number and len(df) > 0:
+        df = df[
+            df['from_number'].str.contains(search_number, case=False, na=False) |
+            df['to_number'].str.contains(search_number, case=False, na=False)
+        ]
+    
+    if len(df) > 0:
+        # Métricas rápidas
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total", len(df))
+        with col2:
+            completed = len(df[df['status'] == 'completed'])
+            st.metric("Completadas", completed)
+        with col3:
+            with_recording = len(df[df['recording_url'].notna()])
+            st.metric("Com Gravação", with_recording)
+        with col4:
+            total_duration = df['duration'].sum()
+            st.metric("Tempo Total", format_duration(total_duration))
+        
+        st.divider()
+        
+        # Tabela de chamadas
+        display_df = df.copy()
+        display_df['created_at'] = pd.to_datetime(display_df['created_at']).dt.strftime('%d/%m/%Y %H:%M:%S')
+        display_df['duration'] = display_df['duration'].apply(format_duration)
+        display_df['has_recording'] = display_df['recording_url'].notna().apply(lambda x: 'Sim' if x else 'Não')
+        
+        columns_to_show = [
+            'created_at', 'from_number', 'to_number', 'destination_number',
+            'status', 'duration', 'campaign', 'has_recording'
+        ]
+        
+        display_df = display_df[columns_to_show]
+        display_df.columns = [
+            'Data/Hora', 'Origem', 'Para (Rastreado)', 'Redirecionado',
+            'Status', 'Duração', 'Campanha', 'Gravação'
+        ]
+        
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Exportar
+        st.subheader("Exportar Dados")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            csv = df.to_csv(index=False)
+            st.download_button(
+                label="Download CSV",
+                data=csv,
+                file_name=f"chamadas_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        
+        with col2:
+            json_str = df.to_json(orient='records', date_format='iso')
+            st.download_button(
+                label="Download JSON",
+                data=json_str,
+                file_name=f"chamadas_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json",
+                use_container_width=True
+            )
+    
+    else:
+        st.info("Nenhuma chamada encontrada com os filtros selecionados")
+
+# ============================================================================
+# PÁGINA: GRAVAÇÕES
+# ============================================================================
+
+elif page == "Gravações":
+    st.title("Gravações de Chamadas")
+    st.markdown("Ouça e gerencie as gravações das chamadas")
+    
+    # Filtros
+    col1, col2 = st.columns(2)
+    with col1:
+        period = st.selectbox("Período", [7, 30, 90], index=1, key="rec_period")
+    with col2:
+        min_duration = st.number_input("Duração Mínima (segundos)", min_value=0, value=0)
+    
+    # Buscar chamadas com gravação
+    start_date = datetime.now() - timedelta(days=period)
+    result = supabase.table('calls').select('*').not_.is_('recording_url', 'null').gte('created_at', start_date.isoformat()).order('created_at', desc=True).execute()
+    
+    if result.data:
+        recordings_df = pd.DataFrame(result.data)
+        
+        # Filtrar por duração
+        if min_duration > 0:
+            recordings_df = recordings_df[recordings_df['recording_duration'] >= min_duration]
+        
+        st.metric("Total de Gravações", len(recordings_df))
+        
+        # Listar gravações
+        for idx, call in recordings_df.iterrows():
+            with st.expander(f"{call['created_at'][:10]} | {call['from_number']} → {call['to_number']}", expanded=False):
+                col1, col2 = st.columns([2, 1])
+                
+                with col1:
+                    st.write(f"**Origem:** {call['from_number']}")
+                    st.write(f"**Destino Rastreado:** {call['to_number']}")
+                    st.write(f"**Redirecionado Para:** {call['destination_number']}")
+                    st.write(f"**Data/Hora:** {call['created_at']}")
+                    st.write(f"**Duração:** {format_duration(call.get('recording_duration', 0))}")
+                    st.write(f"**Campanha:** {call.get('campaign', 'N/A')}")
+                    st.write(f"**Status:** {call['status']}")
+                
+                with col2:
+                    if call['recording_url']:
+                        st.audio(call['recording_url'])
+                        st.link_button("Abrir no Twilio", call['recording_url'], use_container_width=True)
+    else:
+        st.info("Nenhuma gravação disponível no período selecionado")
+
+# ============================================================================
+# PÁGINA: ANALYTICS AVANÇADO
+# ============================================================================
+
+elif page == "Analytics Avançado":
+    st.title("Analytics Avançado")
+    st.markdown("Análise detalhada do desempenho")
+    
+    # Período
+    period = st.selectbox("Período", [7, 30, 90, 365], index=2)
+    
+    df = get_calls(days=period)
+    
+    if len(df) > 0:
+        
+        # Performance por hora do dia
+        st.subheader("Chamadas por Hora do Dia")
+        df['hour'] = pd.to_datetime(df['created_at']).dt.hour
+        hourly = df.groupby('hour').size().reset_index(name='calls')
+        
+        fig = px.bar(hourly, x='hour', y='calls')
+        fig.update_xaxes(title='Hora do Dia', dtick=1)
+        fig.update_yaxes(title='Número de Chamadas')
+        fig.update_layout(showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Performance por dia da semana
+        st.subheader("Chamadas por Dia da Semana")
+        df['weekday'] = pd.to_datetime(df['created_at']).dt.day_name()
+        weekday_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+        weekday_pt = {'Monday': 'Segunda', 'Tuesday': 'Terça', 'Wednesday': 'Quarta', 
+                      'Thursday': 'Quinta', 'Friday': 'Sexta', 'Saturday': 'Sábado', 'Sunday': 'Domingo'}
+        
+        weekday_counts = df['weekday'].value_counts().reindex(weekday_order, fill_value=0)
+        weekday_df = pd.DataFrame({
+            'day': [weekday_pt[d] for d in weekday_counts.index],
+            'calls': weekday_counts.values
+        })
+        
+        fig = px.bar(weekday_df, x='day', y='calls')
+        fig.update_layout(showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Top números que mais ligaram
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Top 10 Números Origem")
+            top_from = df['from_number'].value_counts().head(10).reset_index()
+            top_from.columns = ['Número', 'Chamadas']
+            st.dataframe(top_from, use_container_width=True, hide_index=True)
+        
+        with col2:
+            st.subheader("Top 10 Números Destino")
+            top_to = df['to_number'].value_counts().head(10).reset_index()
+            top_to.columns = ['Número', 'Chamadas']
+            st.dataframe(top_to, use_container_width=True, hide_index=True)
+        
+        # Análise de duração
+        st.subheader("Distribuição de Duração das Chamadas")
+        duration_df = df[df['duration'] > 0].copy()
+        
+        if len(duration_df) > 0:
+            fig = px.histogram(duration_df, x='duration', nbins=30)
+            fig.update_xaxes(title='Duração (segundos)')
+            fig.update_yaxes(title='Número de Chamadas')
+            fig.update_layout(showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Duração Mínima", format_duration(duration_df['duration'].min()))
+            with col2:
+                st.metric("Duração Média", format_duration(duration_df['duration'].mean()))
+            with col3:
+                st.metric("Duração Máxima", format_duration(duration_df['duration'].max()))
+    
+    else:
+        st.info("Sem dados suficientes para analytics no período selecionado")
+
+# ============================================================================
+# PÁGINA: TRACKING UTM
+# ============================================================================
+
+elif page == "Tracking UTM":
+    st.title("Tracking UTM/GCLID")
+    st.markdown("Análise de origens de tráfego")
+    
+    # Buscar tracking sources
+    sources_df = get_tracking_sources()
+    calls_df = get_calls(days=90)
+    
+    if len(sources_df) > 0 and len(calls_df) > 0:
+        
+        # Merge com calls
+        merged = calls_df.merge(
+            sources_df,
+            left_on='tracking_source_id',
+            right_on='id',
+            how='left',
+            suffixes=('_call', '_source')
+        )
+        
+        # Estatísticas por fonte
+        st.subheader("Performance por Fonte UTM")
+        
+        source_stats = merged.groupby('utm_source').agg({
+            'call_sid': 'count',
+            'status': lambda x: (x == 'completed').sum(),
+            'duration': 'mean',
+            'recording_url': lambda x: x.notna().sum()
+        }).reset_index()
+        
+        source_stats.columns = ['Fonte', 'Total Chamadas', 'Completadas', 'Duração Média', 'Gravações']
+        source_stats['Taxa Conversão'] = (source_stats['Completadas'] / source_stats['Total Chamadas'] * 100).round(1)
+        source_stats['Duração Média'] = source_stats['Duração Média'].apply(lambda x: format_duration(x) if not pd.isna(x) else "00:00")
+        
+        st.dataframe(
+            source_stats.sort_values('Total Chamadas', ascending=False),
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Gráfico de fontes
+        fig = px.bar(
+            source_stats.sort_values('Total Chamadas', ascending=False).head(10),
+            x='Fonte',
+            y='Total Chamadas'
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Por campanha
+        st.subheader("Performance por Campanha UTM")
+        
+        campaign_stats = merged.groupby('utm_campaign').agg({
+            'call_sid': 'count',
+            'status': lambda x: (x == 'completed').sum(),
+            'duration': 'mean'
+        }).reset_index()
+        
+        campaign_stats.columns = ['Campanha', 'Total Chamadas', 'Completadas', 'Duração Média']
+        campaign_stats['Taxa Conversão'] = (campaign_stats['Completadas'] / campaign_stats['Total Chamadas'] * 100).round(1)
+        campaign_stats['Duração Média'] = campaign_stats['Duração Média'].apply(lambda x: format_duration(x) if not pd.isna(x) else "00:00")
+        
+        st.dataframe(
+            campaign_stats.sort_values('Total Chamadas', ascending=False),
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # GCLID tracking
+        st.subheader("Google Ads (GCLID)")
+        gclid_df = sources_df[sources_df['gclid'].notna()]
+        
+        if len(gclid_df) > 0:
+            st.metric("Total de Clicks Únicos (GCLID)", len(gclid_df))
+            
+            # Chamadas por GCLID
+            gclid_calls = merged[merged['gclid'].notna()].groupby('gclid').agg({
+                'call_sid': 'count',
+                'status': lambda x: (x == 'completed').sum()
+            }).reset_index()
+            
+            gclid_calls.columns = ['GCLID', 'Chamadas', 'Completadas']
+            st.dataframe(gclid_calls.head(20), use_container_width=True, hide_index=True)
+        else:
+            st.info("Nenhum tracking GCLID registrado ainda")
+    
+    else:
+        st.info("Nenhum dado de tracking UTM disponível ainda")
+
+# ============================================================================
+# PÁGINA: CONFIGURAÇÕES
+# ============================================================================
+
+elif page == "Configurações":
+    st.title("Configurações do Sistema")
+    
+    st.subheader("Informações de Conexão")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.text_input("Supabase URL", SUPABASE_URL, disabled=True)
+    
+    with col2:
+        st.text_input("Supabase Key", "***" + SUPABASE_KEY[-4:] if SUPABASE_KEY else "", disabled=True)
+    
+    st.divider()
+    
+    st.subheader("Webhook URL")
+    webhook_url = "https://call-tracking-production.up.railway.app/webhook/call"
+    st.code(webhook_url)
+    
+    st.markdown("**Configuração no Twilio:**")
+    st.markdown(f"""
+    1. Acesse: https://console.twilio.com/
+    2. Phone Numbers → Manage → Active numbers
+    3. Configure o webhook para: `{webhook_url}?campaign=sua_campanha`
+    """)
+    
+    st.divider()
+    
+    st.subheader("API Endpoints")
+    
+    endpoints = {
+        "Health Check": "/health",
+        "Webhook Principal": "/webhook/call",
+        "Callback Gravação": "/webhook/recording",
+        "Status Chamada": "/webhook/call-status",
+        "Listar Rotas": "/api/routing",
+        "Criar Rota": "/api/routing (POST)",
+        "Tracking Sources": "/api/tracking/sources",
+        "Analytics": "/api/analytics/summary"
     }
-
-
-# ==================== METRICS CARDS ====================
-
-def render_main_metrics(df: pd.DataFrame):
-    """Renderiza cards de métricas principais."""
-    metrics = MetricsService.calculate_main_metrics(df)
     
-    col1, col2, col3, col4, col5 = st.columns(5)
+    for name, endpoint in endpoints.items():
+        st.text(f"{name}: {endpoint}")
     
-    with col1:
-        st.metric(
-            label="📞 Ligações",
-            value=metrics.total_calls,
-            delta=None
-        )
+    st.divider()
     
-    with col2:
-        st.metric(
-            label="👥 Clientes Únicos",
-            value=metrics.unique_callers,
-            delta=None
-        )
+    st.subheader("Diagnóstico")
     
-    with col3:
-        avg_duration_formatted = MetricsService.format_duration(metrics.avg_duration)
-        st.metric(
-            label="⏱️ Média Atendimento",
-            value=avg_duration_formatted,
-            delta=None
-        )
+    if st.button("Testar Conexão com Banco"):
+        try:
+            result = supabase.table('calls').select('*').limit(1).execute()
+            st.success("Conexão com banco OK")
+        except Exception as e:
+            st.error(f"Erro na conexão: {str(e)}")
     
-    with col4:
-        # Média de espera (placeholder - será implementado quando tivermos tempo de espera)
-        st.metric(
-            label="⏳ Média Espera",
-            value="00:00",
-            delta=None,
-            help="Funcionalidade em desenvolvimento"
-        )
+    if st.button("Limpar Cache"):
+        clear_cache()
+        st.success("Cache limpo com sucesso")
+        st.rerun()
     
-    with col5:
-        # CallScore (placeholder - será calculado com mais dados)
-        call_score = round((metrics.answer_rate / 10), 1)
-        st.metric(
-            label="⭐ CallScore Médio",
-            value=f"{call_score}/10",
-            delta=None,
-            help="Score baseado em taxa de atendimento"
-        )
-
-
-# ==================== MONTHLY CARDS ====================
-
-def render_monthly_cards(df: pd.DataFrame):
-    """Renderiza cards comparativos de meses."""
-    st.subheader("📅 Comparativo Mensal")
+    st.divider()
     
-    current, previous = get_current_and_previous_month()
-    current_year, current_month = current
-    previous_year, previous_month = previous
+    st.subheader("Sobre")
+    st.markdown("""
+    **Call Tracking System v2.0**
     
-    # Calcular estatísticas
-    current_stats = MetricsService.calculate_monthly_stats(
-        df, current_year, current_month
-    )
-    previous_stats = MetricsService.calculate_monthly_stats(
-        df, previous_year, previous_month
-    )
+    Sistema completo de rastreamento de chamadas com:
+    - Number Masking (redirecionamento dinâmico)
+    - Gravação automática
+    - Tracking UTM/GCLID
+    - Analytics em tempo real
     
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown(f"### {get_month_name(current_month)} {current_year}")
-        st.markdown(f"""
-        - **{current_stats['total_calls']}** Ligações
-        - **{format_percentage(current_stats['missed_rate'])}** Perdidas
-        - **{format_percentage(current_stats['missed_returned_rate'])}** Perdidas Retornadas
-        - **{format_percentage(current_stats['incomplete_rate'])}** Incompletas
-        - **{format_percentage(current_stats['incomplete_returned_rate'])}** Incompletas Retornadas
-        """)
-    
-    with col2:
-        st.markdown(f"### {get_month_name(previous_month)} {previous_year}")
-        st.markdown(f"""
-        - **{previous_stats['total_calls']}** Ligações
-        - **{format_percentage(previous_stats['missed_rate'])}** Perdidas
-        - **{format_percentage(previous_stats['missed_returned_rate'])}** Perdidas Retornadas
-        - **{format_percentage(previous_stats['incomplete_rate'])}** Incompletas
-        - **{format_percentage(previous_stats['incomplete_returned_rate'])}** Incompletas Retornadas
-        """)
-
-
-# ==================== CHARTS SECTION ====================
-
-def render_charts(df: pd.DataFrame):
-    """Renderiza todos os gráficos do dashboard."""
-    
-    st.subheader("📊 Análises Visuais")
-    
-    # Row 1: Ligações por Campanha + Ligações por Estado
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Gráfico 1: Ligações por Campanha
-        campaign_data = MetricsService.get_calls_by_campaign(df)
-        fig_campaign = create_campaign_bar_chart(campaign_data)
-        st.plotly_chart(fig_campaign, use_container_width=True)
-    
-    with col2:
-        # Gráfico 2: Ligações por Estado
-        state_data = MetricsService.get_calls_by_state(df)
-        fig_state = create_state_pie_chart(state_data)
-        st.plotly_chart(fig_state, use_container_width=True)
-    
-    st.markdown("---")
-    
-    # Row 2: Top Missed + Top Answered
-    col3, col4 = st.columns(2)
-    
-    with col3:
-        # Gráfico 3: Campanhas com mais ligações perdidas
-        top_missed = MetricsService.get_top_missed_campaigns(df, top_n=5)
-        fig_missed = create_top_missed_chart(top_missed)
-        st.plotly_chart(fig_missed, use_container_width=True)
-    
-    with col4:
-        # Gráfico 4: Campanhas com mais ligações atendidas
-        top_answered = MetricsService.get_top_answered_campaigns(df, top_n=5)
-        fig_answered = create_top_answered_chart(top_answered)
-        st.plotly_chart(fig_answered, use_container_width=True)
-    
-    st.markdown("---")
-    
-    # Row 3: Timeline + Intervalo selector
-    st.subheader("📈 Evolução Temporal")
-    
-    # Seletor de intervalo
-    col_interval, col_spacer = st.columns([1, 3])
-    with col_interval:
-        interval = st.selectbox(
-            "Intervalo",
-            options=['daily', 'hourly', 'weekly'],
-            format_func=lambda x: {
-                'daily': 'Diário',
-                'hourly': 'Por Hora',
-                'weekly': 'Semanal'
-            }[x],
-            index=0
-        )
-    
-    # Gráfico 5: Timeline
-    timeline_data = MetricsService.get_calls_timeline(df, interval=interval)
-    fig_timeline = create_timeline_chart(timeline_data, interval=interval)
-    st.plotly_chart(fig_timeline, use_container_width=True)
-
-
-# ==================== MAIN APP ====================
-
-def main():
-    """Função principal do dashboard."""
-    
-    # Aplicar CSS customizado
-    apply_custom_css()
-    
-    # Inicializar session state
-    initialize_session_state()
-    
-    # Header
-    st.title("📞 Call Tracker Dashboard")
-    st.markdown("---")
-    
-    # Renderizar filtros e obter seleções
-    filters = render_sidebar()
-    
-    # Carregar dados
-    with st.spinner("Carregando dados..."):
-        df = load_calls_data(
-            start_date=filters['start_date'],
-            end_date=filters['end_date'],
-            campaign_ids=filters['campaigns'],
-            statuses=filters['statuses']
-        )
-    
-    # Verificar se há dados
-    if df.empty:
-        st.warning("⚠️ Nenhuma chamada encontrada para os filtros selecionados.")
-        st.info("💡 Ajuste os filtros na sidebar ou verifique se há dados no período selecionado.")
-        return
-    
-    # Resumo executivo
-    render_executive_summary(df, filters)
-    
-    st.markdown("---")
-    
-    # Renderizar métricas principais
-    render_main_metrics(df)
-    
-    st.markdown("---")
-    
-    # Renderizar cards mensais
-    render_monthly_cards(df)
-    
-    st.markdown("---")
-    
-    # Renderizar gráficos
-    render_charts(df)
-    
-    st.markdown("---")
-    
-    # Tabela de dados detalhados
-    display_data_table(df, "Chamadas Detalhadas")
-    
-    # Footer
-    st.markdown("---")
-    st.caption(f"Dashboard atualizado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}")
-
-
-if __name__ == "__main__":
-    main()
+    Desenvolvido com Flask, Streamlit, Twilio e Supabase.
+    """)
