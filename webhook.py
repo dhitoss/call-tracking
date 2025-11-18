@@ -122,9 +122,9 @@ def webhook_call() -> Any:
                 'call_sid': call_sid,
                 'from_number': from_number,
                 'to_number': to_number,
-                # 'destination_number': destination, # <--- REMOVIDO: Coluna não existe no DB
+                'destination_number': destination,
                 'status': call_status,
-                # 'campaign': campaign,              # <--- REMOVIDO: Coluna não existe no DB
+                'campaign': campaign or utm_campaign,   
                 'tracking_source_id': tracking_source_id,
                 'created_at': datetime.utcnow().isoformat()
             }

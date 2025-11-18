@@ -618,24 +618,27 @@ elif page == "Gravações":
         
         # Listar gravações
         for idx, call in recordings_df.iterrows():
+            # Proteção contra dados faltantes usando .get()
+            dest = call.get('destination_number') or 'N/A'
+            camp = call.get('campaign') or 'N/A'
+            dur = format_duration(call.get('recording_duration', 0))
+            
             with st.expander(f"{call['created_at'][:10]} | {call['from_number']} → {call['to_number']}", expanded=False):
                 col1, col2 = st.columns([2, 1])
                 
                 with col1:
                     st.write(f"**Origem:** {call['from_number']}")
                     st.write(f"**Destino Rastreado:** {call['to_number']}")
-                    st.write(f"**Redirecionado Para:** {call['destination_number']}")
+                    st.write(f"**Redirecionado Para:** {dest}")  # <--- CORRIGIDO AQUI
                     st.write(f"**Data/Hora:** {call['created_at']}")
-                    st.write(f"**Duração:** {format_duration(call.get('recording_duration', 0))}")
-                    st.write(f"**Campanha:** {call.get('campaign', 'N/A')}")
+                    st.write(f"**Duração:** {dur}")
+                    st.write(f"**Campanha:** {camp}")
                     st.write(f"**Status:** {call['status']}")
                 
                 with col2:
-                    if call['recording_url']:
+                    if call.get('recording_url'):
                         st.audio(call['recording_url'])
                         st.link_button("Abrir no Twilio", call['recording_url'], use_container_width=True)
-    else:
-        st.info("Nenhuma gravação disponível no período selecionado")
 
 # ============================================================================
 # PÁGINA: ANALYTICS AVANÇADO
