@@ -2,6 +2,9 @@
 # CALL TRACKER - STREAMLIT CONFIGURATION
 # ============================================================
 # Documentação: https://docs.streamlit.io/library/advanced-features/configuration
+# Atualizado para Streamlit 1.39+ (Python 3.12 compatível)
+# ============================================================
+
 # ============================================================
 # THEME - Aparência Visual
 # ============================================================
@@ -37,9 +40,6 @@ port = 8501
 # Habilitar CORS (Cross-Origin Resource Sharing)
 enableCORS = false
 
-# Habilitar proteção XSRF
-enableXsrfProtection = true
-
 # Habilitar WebSocket compression
 enableWebsocketCompression = true
 
@@ -56,26 +56,13 @@ headless = true
 # Use 0.0.0.0 para permitir acesso externo
 address = "0.0.0.0"
 
-# Watchdog de arquivo
-# Opções: "auto", "poll", "watchdog"
-fileWatcherType = "auto"
-
-# Cookie secret (gerar aleatório em produção)
-# cookieSecret = "your-random-secret-here"
-
 
 # ============================================================
 # BROWSER - Configurações do Navegador
 # ============================================================
 [browser]
-# Coletar estatísticas de uso (apenas para Streamlit Cloud)
+# Coletar estatísticas de uso
 gatherUsageStats = false
-
-# URL base do servidor
-# serverAddress = "localhost"
-
-# Porta do servidor para o navegador
-# serverPort = 8501
 
 
 # ============================================================
@@ -89,21 +76,13 @@ showErrorDetails = true
 # Opções: "auto", "developer", "viewer", "minimal"
 toolbarMode = "minimal"
 
-# Mostrar botão de sidebar collapse
-showSidebarNavigation = true
-
 
 # ============================================================
 # RUNNER - Configurações de Execução
 # ============================================================
 [runner]
 # Executar on save (hot reload)
-# ATENÇÃO: Pode causar problemas em produção
 fastReruns = true
-
-# Instalar pacotes automaticamente
-# DESABILITADO por segurança
-installTracer = false
 
 # Detectar magic commands
 magicEnabled = true
@@ -123,7 +102,7 @@ fixMatplotlib = true
 # Opções: "error", "warning", "info", "debug"
 level = "info"
 
-# Habilitar logs de mensagens
+# Formato de mensagens de log
 messageFormat = "%(asctime)s %(message)s"
 
 
@@ -134,16 +113,6 @@ messageFormat = "%(asctime)s %(message)s"
 # Mostrar avisos de PyplotGlobalUse
 showPyplotGlobalUse = false
 
-# Mostrar avisos de file uploader encoding
-showfileUploaderEncoding = false
-
-
-# ============================================================
-# MAPBOX - Configuração de Mapas (se usar)
-# ============================================================
-# [mapbox]
-# token = "your-mapbox-token-here"
-
 
 # ============================================================
 # UI - Configurações de Interface
@@ -151,9 +120,6 @@ showfileUploaderEncoding = false
 [ui]
 # Esconder menu hamburger do canto superior direito
 hideTopBar = false
-
-# Esconder rodapé "Made with Streamlit"
-hideSidebarNav = false
 
 
 # ============================================================
@@ -163,34 +129,24 @@ hideSidebarNav = false
 # Modo de desenvolvimento
 developmentMode = false
 
-# Suprimir avisos de depreciação
-suppressDeprecationWarnings = false
-
 # Mostrar warnings
 showWarningOnDirectExecution = true
 
-# Data format
-# Opções: "DMY" (dia/mês/ano), "MDY" (mês/dia/ano), "YMD" (ano/mês/dia)
-dataFrameSerialization = "legacy"
-
-# Mostrar warnings de log level
-logLevel = "info"
-
 
 # ============================================================
-# CUSTOM CONFIG - Configurações Customizadas da Aplicação
+# NOTAS IMPORTANTES
 # ============================================================
-# Você pode adicionar suas próprias configurações aqui
-# e acessá-las via st.secrets em produção
-
-# [app]
-# name = "Call Tracker Dashboard"
-# version = "1.0.0"
-# refresh_interval = 300  # segundos
-
-
+# 
+# REMOVIDAS as seguintes opções obsoletas:
+# - client.showSidebarNavigation (não existe mais no Streamlit 1.39+)
+# - global.dataFrameSerialization (Apache Arrow é padrão agora)
+# - server.enableXsrfProtection (sempre habilitado por padrão)
+# - server.fileWatcherType (gerenciado automaticamente)
+# - server.cookieSecret (gerenciado pelo Streamlit Cloud)
+# - runner.installTracer (removido por segurança)
+# - deprecation.showfileUploaderEncoding (obsoleto)
+# - ui.hideSidebarNav (não existe)
+# - global.suppressDeprecationWarnings (removido)
+# - global.logLevel (use logger.level)
+#
 # ============================================================
-# CACHE - Configurações de Cache
-# ============================================================
-# Não há configurações de cache no config.toml
-# Use decorators @st.cache_data e @st.cache_resource no código
