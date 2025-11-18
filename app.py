@@ -205,7 +205,7 @@ if page == "Dashboard Geral":
         
         with col1:
             st.subheader("Chamadas por Dia")
-            df['date'] = pd.to_datetime(df['created_at']).dt.date
+            df['date'] = pd.to_datetime(df['created_at'], format='ISO8601').dt.date
             daily = df.groupby('date').size().reset_index(name='calls')
             fig = px.area(daily, x='date', y='calls', markers=True)
             fig.update_layout(showlegend=False, height=300)
@@ -309,19 +309,18 @@ elif page == "Gerenciar Rotas":
                             if st.button("Desativar", key=f"deact_{route['id']}", use_container_width=True):
                                 supabase.table('phone_routing').update({'is_active': False}).eq('id', route['id']).execute()
                                 clear_cache()
-                                st.rerun()
+                                st.success("Rota desativada")
                         else:
                             if st.button("Ativar", key=f"act_{route['id']}", use_container_width=True):
                                 supabase.table('phone_routing').update({'is_active': True}).eq('id', route['id']).execute()
                                 clear_cache()
-                                st.rerun()
+                                st.success("Rota ativada")
                     
                     with col6:
                         if st.button("Deletar", key=f"del_{route['id']}", use_container_width=True):
                             supabase.table('phone_routing').delete().eq('id', route['id']).execute()
                             clear_cache()
                             st.success("Rota deletada")
-                            st.rerun()
                     
                     st.divider()
         else:
@@ -386,7 +385,7 @@ elif page == "Gerenciar Rotas":
                         supabase.table('phone_routing').insert(data).execute()
                         clear_cache()
                         st.success("Rota adicionada com sucesso!")
-                        st.rerun()
+                        st.info("Atualize a página para ver a nova rota")
                     except Exception as e:
                         st.error(f"Erro ao adicionar rota: {str(e)}")
     
@@ -491,7 +490,7 @@ elif page == "Chamadas":
         
         # Tabela de chamadas
         display_df = df.copy()
-        display_df['created_at'] = pd.to_datetime(display_df['created_at']).dt.strftime('%d/%m/%Y %H:%M:%S')
+        display_df['created_at'] = pd.to_datetime(display_df['created_at'], format='ISO8601').dt.strftime('%d/%m/%Y %H:%M:%S')
         display_df['duration'] = display_df['duration'].apply(format_duration)
         display_df['has_recording'] = display_df['recording_url'].notna().apply(lambda x: 'Sim' if x else 'Não')
         
@@ -605,7 +604,7 @@ elif page == "Analytics Avançado":
         
         # Performance por hora do dia
         st.subheader("Chamadas por Hora do Dia")
-        df['hour'] = pd.to_datetime(df['created_at']).dt.hour
+        df['hour'] = pd.to_datetime(df['created_at'], format='ISO8601').dt.hour
         hourly = df.groupby('hour').size().reset_index(name='calls')
         
         fig = px.bar(hourly, x='hour', y='calls')
@@ -616,7 +615,7 @@ elif page == "Analytics Avançado":
         
         # Performance por dia da semana
         st.subheader("Chamadas por Dia da Semana")
-        df['weekday'] = pd.to_datetime(df['created_at']).dt.day_name()
+        df['weekday'] = pd.to_datetime(df['created_at'], format='ISO8601').dt.day_name()
         weekday_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
         weekday_pt = {'Monday': 'Segunda', 'Tuesday': 'Terça', 'Wednesday': 'Quarta', 
                       'Thursday': 'Quinta', 'Friday': 'Sexta', 'Saturday': 'Sábado', 'Sunday': 'Domingo'}
