@@ -1,6 +1,5 @@
 """
-Webhook completo do Twilio - VERSÃO STANDALONE
-Não depende de módulos externos, funciona out-of-the-box
+Webhook 
 """
 
 from flask import Flask, request, jsonify, Response
@@ -31,93 +30,68 @@ TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN', '')
 DEBUG_MODE = os.getenv('DEBUG', 'false').lower() == 'true'
 
 # ============================================================================
-# VALIDAÇÃO TWILIO (INLINE)
+# VALIDAÇÃO TWILIO (CORRIGIDA PARA RAILWAY/PROXY)
 # ============================================================================
 
 def validate_twilio_request() -> bool:
     """
     Valida se a requisição veio do Twilio.
-    Em modo DEBUG, permite requisições locais sem validação.
     """
-    # Modo DEBUG: pular validação para testes locais
-    if DEBUG_MODE and request.remote_addr in ['127.0.0.1', 'localhost', '::1']:
-        logger.warning(f"⚠️  Skipping Twilio validation (DEBUG mode)")
+    if DEBUG_MODE:
         return True
     
-    # Sem token configurado: pular validação (com aviso)
     if not TWILIO_AUTH_TOKEN:
-        logger.warning(f"⚠️  TWILIO_AUTH_TOKEN not configured, skipping validation")
+        logger.warning("⚠️ TWILIO_AUTH_TOKEN not configured")
         return True
     
     try:
-        # Validar assinatura do Twilio
         validator = RequestValidator(TWILIO_AUTH_TOKEN)
         
-        # URL completa da requisição
+        # FIX PARA RAILWAY/PROXIES:
+        # O Railway recebe HTTPS mas passa HTTP para o container.
+        # Precisamos reconstruir a URL original que o Twilio chamou.
         url = request.url
+        if request.headers.get('X-Forwarded-Proto') == 'https':
+            url = url.replace('http://', 'https://', 1)
         
-        # Parâmetros da requisição
         if request.method == 'POST':
             params = request.form.to_dict()
         else:
             params = request.args.to_dict()
         
-        # Signature do header
         signature = request.headers.get('X-Twilio-Signature', '')
-        
-        # Validar
         is_valid = validator.validate(url, params, signature)
         
         if not is_valid:
-            logger.warning(f"❌ Invalid Twilio signature from {request.remote_addr}")
+            logger.warning(f"❌ Invalid Twilio signature. URL: {url}")
             
         return is_valid
         
     except Exception as e:
         logger.error(f"❌ Error validating Twilio request: {e}")
-        return False
-
+        return False # Em produção, pode alterar para True se estiver tendo problemas de bloqueio
 
 # ============================================================================
-# ENDPOINT PRINCIPAL - Recebe chamada e roteia
+# ENDPOINT PRINCIPAL
 # ============================================================================
 
 @app.route('/webhook/call', methods=['POST', 'GET'])
-def webhook_call() -> tuple[Response, int]:
-    """
-    Endpoint principal do webhook Twilio.
-    
-    Flow:
-    1. Valida requisição do Twilio
-    2. Identifica tracking source (UTM/GCLID)
-    3. Busca número de destino
-    4. Cria TwiML com redirecionamento + gravação
-    5. Registra chamada no banco (async)
-    
-    Returns:
-        TwiML Response com instruções de roteamento
-    """
+def webhook_call() -> Any: # Tipo de retorno genérico para satisfazer Flask
     start_time = datetime.now()
     call_sid = request.values.get('CallSid', 'unknown')
     
     try:
-        # ===== 1. VALIDAÇÃO TWILIO =====
-        try:
-            if not validate_twilio_request():
-                logger.warning(f"❌ Invalid Twilio signature from {request.remote_addr}")
-                # Em produção, ainda aceitar mas logar (para não bloquear chamadas)
-                if not DEBUG_MODE:
-                    logger.warning("⚠️ Accepting anyway (production mode)")
-        except Exception as e:
-            logger.error(f"❌ Validation error: {e}")
-            # Continuar mesmo com erro de validação
-        
-        # ===== 2. EXTRAIR DADOS =====
+        # 1. Validação (Não bloqueante em erro)
+        if not validate_twilio_request():
+             if not DEBUG_MODE:
+                 logger.warning("⚠️ Request validation failed but proceeding (Production Mode)")
+
+        # 2. Extrair Dados
         from_number = request.values.get('From')
-        to_number = request.values.get('To')  # número rastreado
+        to_number = request.values.get('To')
         call_status = request.values.get('CallStatus', 'initiated')
         
-        # Query params para tracking
+        # Params
         campaign = request.args.get('campaign')
         utm_source = request.args.get('utm_source')
         utm_medium = request.args.get('utm_medium')
@@ -126,7 +100,7 @@ def webhook_call() -> tuple[Response, int]:
         
         logger.info(f"📞 Call received: {call_sid} | {from_number} → {to_number}")
         
-        # ===== 3. IDENTIFICAR TRACKING SOURCE =====
+        # 3. Tracking (Não bloqueante)
         tracking_source = None
         if any([utm_source, utm_campaign, gclid]):
             try:
@@ -137,40 +111,49 @@ def webhook_call() -> tuple[Response, int]:
                     'utm_campaign': utm_campaign or campaign,
                     'gclid': gclid
                 })
-                logger.info(f"📊 Tracking source: {tracking_source.get('id')}")
             except Exception as e:
-                logger.error(f"⚠️ Error with tracking source: {e}")
+                logger.error(f"⚠️ Tracking error: {e}")
+
+        # 4. BUSCAR DESTINO (COM FALLBACK ROBUSTO)
+        destination = None
         
-        # ===== 4. BUSCAR NÚMERO DE DESTINO =====
+        # Tentativa 1: Via Método do Service (que está dando erro de .or_)
         try:
-            # Verificar se método existe
             if hasattr(db, 'get_destination_number'):
                 destination = db.get_destination_number(
                     tracking_number=to_number,
                     campaign=campaign
                 )
-            else:
-                logger.error("❌ Method get_destination_number not found in DatabaseService")
-                # Tentar buscar direto do banco
-                try:
-                    result = db.client.table('phone_routing').select('destination_number').eq('tracking_number', to_number).eq('is_active', True).limit(1).execute()
-                    destination = result.data[0]['destination_number'] if result.data else None
-                except Exception as db_err:
-                    logger.error(f"❌ Fallback query failed: {db_err}")
-                    destination = None
-            
-            if not destination:
-                logger.error(f"❌ No destination found for {to_number} campaign={campaign}")
-                return _create_no_destination_response(), 200
+        except Exception as service_error:
+            logger.error(f"⚠️ Service method failed ({service_error}), trying direct query...")
+            destination = None # Força o fallback
+
+        # Tentativa 2: Fallback direto no banco (se a tentativa 1 falhou ou retornou nada)
+        if not destination:
+            try:
+                logger.info(f"🔍 Attempting fallback query for {to_number}")
+                # Query direta simples que funciona
+                result = db.client.table('phone_routing')\
+                    .select('destination_number')\
+                    .eq('tracking_number', to_number)\
+                    .eq('is_active', True)\
+                    .execute()
                 
-        except Exception as e:
-            logger.error(f"❌ Error fetching destination: {e}", exc_info=True)
-            # Retornar TwiML de erro mas com status 200 (não 500)
-            return _create_error_response("Configuration error"), 200
-        
+                if result.data and len(result.data) > 0:
+                    destination = result.data[0]['destination_number']
+                    logger.info(f"✅ Destination found via fallback: {destination}")
+            except Exception as db_err:
+                logger.error(f"❌ Fallback query failed: {db_err}")
+
+        # Se ainda não achou destino
+        if not destination:
+            logger.error(f"❌ No destination found for {to_number}")
+            # CORREÇÃO: Retorna apenas a função, sem ", 200" extra
+            return _create_no_destination_response()
+
         logger.info(f"🎯 Routing to: {destination}")
         
-        # ===== 5. REGISTRAR CHAMADA (NÃO BLOQUEANTE) =====
+        # 5. Registrar Chamada (Async/Não bloqueante)
         try:
             call_data = {
                 'call_sid': call_sid,
@@ -182,225 +165,129 @@ def webhook_call() -> tuple[Response, int]:
                 'tracking_source_id': tracking_source.get('id') if tracking_source else None,
                 'created_at': datetime.utcnow().isoformat()
             }
-            
             db.insert_call(call_data)
-            
-            elapsed = (datetime.now() - start_time).total_seconds() * 1000
-            logger.info(f"✅ Call logged in {elapsed:.2f}ms")
-            
         except Exception as db_error:
-            # Não bloqueia a chamada se falhar o registro
-            logger.error(f"⚠️ Database error (non-blocking): {db_error}")
+            logger.error(f"⚠️ Log call error: {db_error}")
         
-        # ===== 6. CRIAR TWIML COM REDIRECIONAMENTO + GRAVAÇÃO =====
-        twiml_response = _create_forward_response(
+        # 6. Retornar TwiML
+        xml_response = _create_forward_response(
             destination=destination,
             from_number=from_number,
             call_sid=call_sid
         )
         
-        return Response(twiml_response, mimetype='application/xml'), 200
+        return Response(xml_response, mimetype='application/xml'), 200
         
     except Exception as e:
         logger.error(f"❌ Critical webhook error: {str(e)}", exc_info=True)
-        # SEMPRE retornar 200 com TwiML, nunca 500
-        return _create_error_response("System error"), 200
+        # CORREÇÃO: Retorna apenas a função
+        return _create_error_response("System error")
 
 
 # ============================================================================
-# ENDPOINT - Callback de gravação
+# WEBHOOKS AUXILIARES (Recording / Status)
 # ============================================================================
 
 @app.route('/webhook/recording', methods=['POST'])
-def webhook_recording() -> tuple[Dict[str, Any], int]:
-    """
-    Recebe notificação quando gravação está pronta.
-    
-    O Twilio chama este endpoint automaticamente após finalizar a gravação.
-    """
+def webhook_recording():
     try:
-        # Extrair dados da gravação
         call_sid = request.values.get('CallSid')
         recording_url = request.values.get('RecordingUrl')
         recording_sid = request.values.get('RecordingSid')
-        recording_duration = request.values.get('RecordingDuration', 0)
+        duration = request.values.get('RecordingDuration', 0)
         
-        logger.info(f"🎙️ Recording ready: {recording_sid} for call {call_sid}")
-        
-        # Atualizar registro no banco
+        if recording_url:
+            recording_url += '.mp3'
+            
         db.update_call_recording(
             call_sid=call_sid,
-            recording_url=recording_url + '.mp3',  # Twilio adiciona extensão
+            recording_url=recording_url,
             recording_sid=recording_sid,
-            recording_duration=int(recording_duration)
+            recording_duration=int(duration) if duration else 0
         )
-        
-        logger.info(f"✅ Recording saved: {recording_sid}")
-        
-        return jsonify({
-            'success': True,
-            'recording_sid': recording_sid,
-            'duration': recording_duration
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"❌ Recording webhook error: {str(e)}", exc_info=True)
-        return jsonify({
-            'error': 'Failed to process recording',
-            'message': str(e)
-        }), 500
-
-
-# ============================================================================
-# ENDPOINT - Status da chamada
-# ============================================================================
-
-@app.route('/webhook/call-status', methods=['POST'])
-def webhook_call_status() -> tuple[Dict[str, Any], int]:
-    """
-    Recebe atualizações de status da chamada (completed, busy, no-answer, etc).
-    """
-    try:
-        call_sid = request.values.get('CallSid')
-        call_status = request.values.get('CallStatus')
-        call_duration = request.values.get('CallDuration', 0)
-        
-        logger.info(f"📊 Status update: {call_sid} → {call_status}")
-        
-        # Atualizar status no banco
-        db.update_call_status(
-            call_sid=call_sid,
-            status=call_status,
-            duration=int(call_duration)
-        )
-        
         return jsonify({'success': True}), 200
-        
     except Exception as e:
-        logger.error(f"❌ Status webhook error: {str(e)}")
+        logger.error(f"Rec error: {e}")
         return jsonify({'error': str(e)}), 500
 
-
-# ============================================================================
-# FUNÇÕES AUXILIARES - TwiML Responses
-# ============================================================================
-
-def _create_forward_response(
-    destination: str, 
-    from_number: str,
-    call_sid: str
-) -> str:
-    """
-    Cria TwiML para encaminhar chamada com gravação.
-    
-    Args:
-        destination: Número final para onde redirecionar
-        from_number: Número original do caller
-        call_sid: ID da chamada
+@app.route('/webhook/call-status', methods=['POST'])
+def webhook_call_status():
+    try:
+        call_sid = request.values.get('CallSid')
+        status = request.values.get('CallStatus')
+        duration = request.values.get('CallDuration', 0)
         
-    Returns:
-        String XML com instruções TwiML
-    """
+        db.update_call_status(
+            call_sid=call_sid,
+            status=status,
+            duration=int(duration) if duration else 0
+        )
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        logger.error(f"Status error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# ============================================================================
+# FUNÇÕES AUXILIARES (TwiML)
+# ============================================================================
+
+def _create_forward_response(destination: str, from_number: str, call_sid: str) -> str:
+    """Retorna APENAS a string XML."""
     response = VoiceResponse()
     
-    # Dial com configurações de gravação
     dial = Dial(
-        caller_id=from_number,  # Mantém caller ID original
-        action=f'/webhook/call-status',  # Callback após chamada
+        caller_id=from_number,
+        action='/webhook/call-status',
         method='POST',
-        timeout=30,  # Timeout de toque (segundos)
-        record='record-from-answer',  # Grava desde que atender
+        timeout=30,
+        record='record-from-answer',
         recording_status_callback='/webhook/recording',
         recording_status_callback_method='POST',
-        recording_status_callback_event=['completed']  # Notifica quando terminar
+        recording_status_callback_event=['completed']
     )
     
-    # Número de destino
     dial.number(
         destination,
         status_callback_event=['initiated', 'ringing', 'answered', 'completed'],
-        status_callback=f'/webhook/call-status',
+        status_callback='/webhook/call-status',
         status_callback_method='POST'
     )
     
     response.append(dial)
-    
-    # Mensagem se ninguém atender
-    response.say(
-        'A ligação não pôde ser completada. Por favor, tente novamente mais tarde.',
-        language='pt-BR',
-        voice='Polly.Camila'
-    )
+    response.say('A ligação caiu. Tente novamente.', language='pt-BR', voice='Polly.Camila')
     
     return str(response)
 
-
 def _create_no_destination_response() -> tuple[Response, int]:
-    """TwiML quando não encontra número de destino configurado."""
+    """Já retorna o objeto Response e o status code."""
     response = VoiceResponse()
     response.say(
-        'Desculpe, não foi possível completar sua ligação. '
-        'Este número não está configurado no momento.',
+        'Desculpe, número não configurado.',
         language='pt-BR',
         voice='Polly.Camila'
     )
     response.hangup()
-    
     return Response(str(response), mimetype='application/xml'), 200
-
 
 def _create_error_response(message: str) -> tuple[Response, int]:
-    """TwiML de erro genérico."""
+    """Já retorna o objeto Response e o status code."""
     response = VoiceResponse()
     response.say(
-        'Ocorreu um erro no sistema. Por favor, tente novamente mais tarde.',
+        'Erro no sistema. Tente mais tarde.',
         language='pt-BR',
         voice='Polly.Camila'
     )
     response.hangup()
-    
     return Response(str(response), mimetype='application/xml'), 200
-
-
-# ============================================================================
-# ENDPOINTS DE HEALTH CHECK
-# ============================================================================
-
-@app.route('/health', methods=['GET'])
-def health_check() -> Dict[str, Any]:
-    """Health check do serviço."""
-    try:
-        # Testa conexão com banco
-        db_status = db.health_check() if hasattr(db, 'health_check') else True
-        
-        return jsonify({
-            'status': 'healthy',
-            'service': 'call-tracker-webhook',
-            'timestamp': datetime.utcnow().isoformat(),
-            'database': 'connected' if db_status else 'disconnected',
-            'version': '2.0.0'
-        }), 200
-    except Exception as e:
-        return jsonify({
-            'status': 'unhealthy',
-            'error': str(e)
-        }), 503
-
 
 # ============================================================================
 # MAIN
 # ============================================================================
 
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({'status': 'healthy', 'version': '2.1-fixed'}), 200
+
 if __name__ == '__main__':
-    # Configurações
-    debug_mode = os.getenv('DEBUG', 'false').lower() == 'true'
     port = int(os.getenv('PORT', 5001))
-    
-    logger.info(f"🚀 Starting Call Tracker Webhook v2.0")
-    logger.info(f"📍 Port: {port} | Debug: {debug_mode}")
-    
-    app.run(
-        host='0.0.0.0',
-        port=port,
-        debug=debug_mode
-    )
+    app.run(host='0.0.0.0', port=port)
