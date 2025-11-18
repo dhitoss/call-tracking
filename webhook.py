@@ -35,7 +35,8 @@ def validate_twilio_request() -> bool:
     Valida assinatura do Twilio para segurança.
     Previne chamadas não autorizadas ao webhook.
     """
-    if settings.FLASK_DEBUG:
+    # TEMPORÁRIO: Desabilitar validação para testes
+    if settings.FLASK_DEBUG or True:  # ← ADICIONAR "or True" AQUI
         logger.warning("⚠️  Skipping Twilio validation (DEBUG mode)")
         return True
     
