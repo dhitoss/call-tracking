@@ -2,6 +2,11 @@
 # CALL TRACKER - STREAMLIT CONFIGURATION
 # ============================================================
 # Documentação: https://docs.streamlit.io/library/advanced-features/configuration
+[global]
+# Força o Streamlit a usar uma versão de Python compatível
+# 3.11 é a mais segura para Pandas 2.x
+python = "3.11" 
+
 
 # ============================================================
 # THEME - Aparência Visual
