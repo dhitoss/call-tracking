@@ -34,9 +34,6 @@ base = "light"
 # SERVER - Configurações do Servidor
 # ============================================================
 [server]
-#Versão do Python
-pythonVersion = "3.11"
-
 # Porta do servidor
 port = 8501
 
