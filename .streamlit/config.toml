@@ -3,12 +3,8 @@
 # ============================================================
 # Documentação: https://docs.streamlit.io/library/advanced-features/configuration
 [global]
-# Força o Streamlit a usar uma versão de Python compatível
-# 3.11 é a mais segura para Pandas 2.x
 python = "3.11" 
 
-[server]
-pythonVersion = "3.11"
 # ============================================================
 # THEME - Aparência Visual
 # ============================================================
@@ -38,6 +34,9 @@ base = "light"
 # SERVER - Configurações do Servidor
 # ============================================================
 [server]
+#Versão do Python
+pythonVersion = "3.11"
+
 # Porta do servidor
 port = 8501
 
@@ -201,16 +200,3 @@ logLevel = "info"
 # ============================================================
 # Não há configurações de cache no config.toml
 # Use decorators @st.cache_data e @st.cache_resource no código
-
-
-# ============================================================
-# SECRETS MANAGEMENT (apenas para referência)
-# ============================================================
-# Secrets devem ir em .streamlit/secrets.toml
-# NÃO coloque credenciais aqui!
-# 
-# Exemplo de secrets.toml:
-# SUPABASE_URL = "https://xxx.supabase.co"
-# SUPABASE_KEY = "your-key"
-# TWILIO_ACCOUNT_SID = "ACxxx"
-# TWILIO_AUTH_TOKEN = "your-token"
