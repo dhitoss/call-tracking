@@ -1,0 +1,210 @@
+# ============================================================
+# CALL TRACKER - STREAMLIT CONFIGURATION
+# ============================================================
+# Documentação: https://docs.streamlit.io/library/advanced-features/configuration
+
+# ============================================================
+# THEME - Aparência Visual
+# ============================================================
+[theme]
+# Cor primária (botões, links, accent)
+primaryColor = "#3b82f6"
+
+# Cor de fundo principal
+backgroundColor = "#ffffff"
+
+# Cor de fundo secundária (sidebar, containers)
+secondaryBackgroundColor = "#f8fafc"
+
+# Cor do texto principal
+textColor = "#1e293b"
+
+# Fonte do aplicativo
+# Opções: "sans serif", "serif", "monospace"
+font = "sans serif"
+
+# Base do tema
+# Opções: "light", "dark"
+base = "light"
+
+
+# ============================================================
+# SERVER - Configurações do Servidor
+# ============================================================
+[server]
+# Porta do servidor
+port = 8501
+
+# Habilitar CORS (Cross-Origin Resource Sharing)
+enableCORS = false
+
+# Habilitar proteção XSRF
+enableXsrfProtection = true
+
+# Habilitar WebSocket compression
+enableWebsocketCompression = true
+
+# Tamanho máximo de upload (MB)
+maxUploadSize = 200
+
+# Tamanho máximo de mensagem (MB)
+maxMessageSize = 200
+
+# Executar em modo headless (sem browser automático)
+headless = true
+
+# Endereço do servidor
+# Use 0.0.0.0 para permitir acesso externo
+address = "0.0.0.0"
+
+# Watchdog de arquivo
+# Opções: "auto", "poll", "watchdog"
+fileWatcherType = "auto"
+
+# Cookie secret (gerar aleatório em produção)
+# cookieSecret = "your-random-secret-here"
+
+
+# ============================================================
+# BROWSER - Configurações do Navegador
+# ============================================================
+[browser]
+# Coletar estatísticas de uso (apenas para Streamlit Cloud)
+gatherUsageStats = false
+
+# URL base do servidor
+# serverAddress = "localhost"
+
+# Porta do servidor para o navegador
+# serverPort = 8501
+
+
+# ============================================================
+# CLIENT - Configurações do Cliente
+# ============================================================
+[client]
+# Mostrar detalhes de erro no frontend
+showErrorDetails = true
+
+# Modo da toolbar
+# Opções: "auto", "developer", "viewer", "minimal"
+toolbarMode = "minimal"
+
+# Mostrar botão de sidebar collapse
+showSidebarNavigation = true
+
+
+# ============================================================
+# RUNNER - Configurações de Execução
+# ============================================================
+[runner]
+# Executar on save (hot reload)
+# ATENÇÃO: Pode causar problemas em produção
+fastReruns = true
+
+# Instalar pacotes automaticamente
+# DESABILITADO por segurança
+installTracer = false
+
+# Detectar magic commands
+magicEnabled = true
+
+# Post script GC (Garbage Collection)
+postScriptGC = true
+
+# Fix matplotlib
+fixMatplotlib = true
+
+
+# ============================================================
+# LOGGER - Configurações de Log
+# ============================================================
+[logger]
+# Nível de log
+# Opções: "error", "warning", "info", "debug"
+level = "info"
+
+# Habilitar logs de mensagens
+messageFormat = "%(asctime)s %(message)s"
+
+
+# ============================================================
+# DEPRECATION - Avisos de Depreciação
+# ============================================================
+[deprecation]
+# Mostrar avisos de PyplotGlobalUse
+showPyplotGlobalUse = false
+
+# Mostrar avisos de file uploader encoding
+showfileUploaderEncoding = false
+
+
+# ============================================================
+# MAPBOX - Configuração de Mapas (se usar)
+# ============================================================
+# [mapbox]
+# token = "your-mapbox-token-here"
+
+
+# ============================================================
+# UI - Configurações de Interface
+# ============================================================
+[ui]
+# Esconder menu hamburger do canto superior direito
+hideTopBar = false
+
+# Esconder rodapé "Made with Streamlit"
+hideSidebarNav = false
+
+
+# ============================================================
+# GLOBAL - Configurações Globais
+# ============================================================
+[global]
+# Modo de desenvolvimento
+developmentMode = false
+
+# Suprimir avisos de depreciação
+suppressDeprecationWarnings = false
+
+# Mostrar warnings
+showWarningOnDirectExecution = true
+
+# Data format
+# Opções: "DMY" (dia/mês/ano), "MDY" (mês/dia/ano), "YMD" (ano/mês/dia)
+dataFrameSerialization = "legacy"
+
+# Mostrar warnings de log level
+logLevel = "info"
+
+
+# ============================================================
+# CUSTOM CONFIG - Configurações Customizadas da Aplicação
+# ============================================================
+# Você pode adicionar suas próprias configurações aqui
+# e acessá-las via st.secrets em produção
+
+# [app]
+# name = "Call Tracker Dashboard"
+# version = "1.0.0"
+# refresh_interval = 300  # segundos
+
+
+# ============================================================
+# CACHE - Configurações de Cache
+# ============================================================
+# Não há configurações de cache no config.toml
+# Use decorators @st.cache_data e @st.cache_resource no código
+
+
+# ============================================================
+# SECRETS MANAGEMENT (apenas para referência)
+# ============================================================
+# Secrets devem ir em .streamlit/secrets.toml
+# NÃO coloque credenciais aqui!
+# 
+# Exemplo de secrets.toml:
+# SUPABASE_URL = "https://xxx.supabase.co"
+# SUPABASE_KEY = "your-key"
+# TWILIO_ACCOUNT_SID = "ACxxx"
+# TWILIO_AUTH_TOKEN = "your-token"
