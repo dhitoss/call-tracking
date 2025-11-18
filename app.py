@@ -86,7 +86,20 @@ def get_calls(days=30, status=None, campaign=None):
         query = query.eq('campaign', campaign)
     
     result = query.order('created_at', desc=True).execute()
-    return pd.DataFrame(result.data) if result.data else pd.DataFrame()
+    df = pd.DataFrame(result.data) if result.data else pd.DataFrame()
+    
+    # Garantir que colunas essenciais existam
+    if len(df) > 0:
+        if 'campaign' not in df.columns:
+            df['campaign'] = None
+        if 'destination_number' not in df.columns:
+            df['destination_number'] = None
+        if 'recording_url' not in df.columns:
+            df['recording_url'] = None
+        if 'duration' not in df.columns:
+            df['duration'] = 0
+    
+    return df
 
 @st.cache_data(ttl=60)
 def get_routes():
@@ -192,9 +205,11 @@ if page == "Dashboard Geral":
             st.metric("Gravadas", recorded)
         
         with col4:
-            if 'duration' in df.columns:
+            if 'duration' in df.columns and df['duration'].notna().any():
                 avg_duration = df[df['duration'] > 0]['duration'].mean()
                 st.metric("Duração Média", format_duration(avg_duration) if not pd.isna(avg_duration) else "00:00")
+            else:
+                st.metric("Duração Média", "00:00")
         
         with col5:
             unique_callers = df['from_number'].nunique()
@@ -219,7 +234,7 @@ if page == "Dashboard Geral":
             st.plotly_chart(fig, use_container_width=True)
         
         # Campanhas
-        if 'campaign' in df.columns:
+        if 'campaign' in df.columns and df['campaign'].notna().any():
             st.subheader("Performance por Campanha")
             campaign_df = df[df['campaign'].notna()].copy()
             
@@ -242,11 +257,22 @@ if page == "Dashboard Geral":
         
         # Últimas chamadas
         st.subheader("Últimas Chamadas (10 mais recentes)")
-        recent_df = df.head(10)[['created_at', 'from_number', 'to_number', 'status', 'duration', 'campaign']].copy()
-        recent_df['created_at'] = pd.to_datetime(recent_df['created_at']).dt.strftime('%d/%m/%Y %H:%M')
-        recent_df['duration'] = recent_df['duration'].apply(format_duration)
-        recent_df.columns = ['Data/Hora', 'Origem', 'Destino', 'Status', 'Duração', 'Campanha']
         
+        # Selecionar apenas colunas que existem
+        available_cols = ['created_at', 'from_number', 'to_number', 'status', 'duration']
+        if 'campaign' in df.columns:
+            available_cols.append('campaign')
+        
+        recent_df = df.head(10)[available_cols].copy()
+        recent_df['created_at'] = pd.to_datetime(recent_df['created_at'], format='ISO8601').dt.strftime('%d/%m/%Y %H:%M')
+        recent_df['duration'] = recent_df['duration'].apply(format_duration)
+        
+        # Renomear colunas
+        col_names = ['Data/Hora', 'Origem', 'Destino', 'Status', 'Duração']
+        if 'campaign' in df.columns:
+            col_names.append('Campanha')
+        
+        recent_df.columns = col_names
         st.dataframe(recent_df, use_container_width=True, hide_index=True)
         
     else:
@@ -483,8 +509,11 @@ elif page == "Chamadas":
             with_recording = len(df[df['recording_url'].notna()])
             st.metric("Com Gravação", with_recording)
         with col4:
-            total_duration = df['duration'].sum()
-            st.metric("Tempo Total", format_duration(total_duration))
+            if 'duration' in df.columns:
+                total_duration = df['duration'].sum()
+                st.metric("Tempo Total", format_duration(total_duration))
+            else:
+                st.metric("Tempo Total", "00:00")
         
         st.divider()
         
@@ -494,16 +523,37 @@ elif page == "Chamadas":
         display_df['duration'] = display_df['duration'].apply(format_duration)
         display_df['has_recording'] = display_df['recording_url'].notna().apply(lambda x: 'Sim' if x else 'Não')
         
-        columns_to_show = [
-            'created_at', 'from_number', 'to_number', 'destination_number',
-            'status', 'duration', 'campaign', 'has_recording'
-        ]
+        # Selecionar colunas disponíveis
+        columns_to_show = []
+        col_names = []
+        
+        if 'created_at' in display_df.columns:
+            columns_to_show.append('created_at')
+            col_names.append('Data/Hora')
+        if 'from_number' in display_df.columns:
+            columns_to_show.append('from_number')
+            col_names.append('Origem')
+        if 'to_number' in display_df.columns:
+            columns_to_show.append('to_number')
+            col_names.append('Para (Rastreado)')
+        if 'destination_number' in display_df.columns:
+            columns_to_show.append('destination_number')
+            col_names.append('Redirecionado')
+        if 'status' in display_df.columns:
+            columns_to_show.append('status')
+            col_names.append('Status')
+        if 'duration' in display_df.columns:
+            columns_to_show.append('duration')
+            col_names.append('Duração')
+        if 'campaign' in display_df.columns:
+            columns_to_show.append('campaign')
+            col_names.append('Campanha')
+        if 'has_recording' in display_df.columns:
+            columns_to_show.append('has_recording')
+            col_names.append('Gravação')
         
         display_df = display_df[columns_to_show]
-        display_df.columns = [
-            'Data/Hora', 'Origem', 'Para (Rastreado)', 'Redirecionado',
-            'Status', 'Duração', 'Campanha', 'Gravação'
-        ]
+        display_df.columns = col_names
         
         st.dataframe(
             display_df,
