@@ -1,5 +1,5 @@
 """
-Webhook completo do Twilio - VERSÃO CORRIGIDA (DB + TwiML XML)
+Webhook (Schema Fix)
 """
 
 from flask import Flask, request, jsonify, Response
@@ -52,7 +52,7 @@ def validate_twilio_request() -> bool:
         return validator.validate(url, params, signature)
     except Exception as e:
         logger.error(f"Validation Error: {e}")
-        return True # Em produção, melhor não bloquear se falhar a validação interna
+        return True
 
 # ============================================================================
 # ENDPOINT PRINCIPAL
@@ -86,7 +86,6 @@ def webhook_call() -> Any:
                 'utm_campaign': utm_campaign or campaign,
                 'gclid': request.args.get('gclid')
             }
-            # Só chama se tiver dados relevantes
             if any(tracking_data.values()):
                 ts = db.get_or_create_tracking_source(tracking_data)
                 tracking_source_id = ts.get('id') if ts else None
@@ -95,14 +94,13 @@ def webhook_call() -> Any:
 
         # 2. Buscar Destino (Com Fallback)
         destination = None
-        # Tentativa Via Service
         try:
             if hasattr(db, 'get_destination_number'):
                 destination = db.get_destination_number(to_number, campaign)
         except:
             pass 
             
-        # Tentativa Via Query Direta (Fallback)
+        # Fallback direto
         if not destination:
             try:
                 result = db.client.table('phone_routing')\
@@ -119,19 +117,19 @@ def webhook_call() -> Any:
             return _create_no_destination_response()
 
         # 3. Registrar Chamada
-        # CORREÇÃO DO ERRO DE BANCO: Removemos campos que não existem na tabela 'calls'
         try:
             call_data = {
                 'call_sid': call_sid,
                 'from_number': from_number,
                 'to_number': to_number,
-                'destination_number': destination,
+                # 'destination_number': destination, # <--- REMOVIDO: Coluna não existe no DB
                 'status': call_status,
-                # 'campaign': campaign,  <-- REMOVIDO: A tabela não tem essa coluna
+                # 'campaign': campaign,              # <--- REMOVIDO: Coluna não existe no DB
                 'tracking_source_id': tracking_source_id,
                 'created_at': datetime.utcnow().isoformat()
             }
             db.insert_call(call_data)
+            logger.info("✅ Call inserted successfully")
         except Exception as db_error:
             logger.error(f"Insert Call Error: {db_error}")
         
@@ -149,15 +147,11 @@ def webhook_call() -> Any:
 
 
 # ============================================================================
-# ENDPOINT NOVO - AÇÃO PÓS-LIGAÇÃO (CORREÇÃO ERRO 12300)
+# WEBHOOK AUXILIAR (Hangup XML)
 # ============================================================================
 
 @app.route('/webhook/call-completed', methods=['POST'])
 def webhook_call_completed():
-    """
-    Rota chamada pelo 'action' do Dial quando a ligação termina.
-    Deve retornar XML, não JSON.
-    """
     response = VoiceResponse()
     response.hangup()
     return Response(str(response), mimetype='application/xml'), 200
@@ -188,7 +182,6 @@ def webhook_recording():
 def webhook_call_status():
     try:
         call_sid = request.values.get('CallSid')
-        # status = request.values.get('CallStatus') # Log opcional
         
         db.update_call_status(
             call_sid=call_sid,
@@ -202,41 +195,32 @@ def webhook_call_status():
 
 
 # ============================================================================
-# FUNÇÕES TWIML (CORRIGIDAS)
+# FUNÇÕES TWIML
 # ============================================================================
 
 def _create_forward_response(destination: str, from_number: str) -> str:
     response = VoiceResponse()
     
-    # CORREÇÃO ERRO 12300: 'action' agora aponta para rota XML, não JSON
-    # CORREÇÃO ERRO 21626: events passados como string única separada por espaço
-    
     dial = Dial(
         caller_id=from_number,
-        action='/webhook/call-completed',  # Nova rota que retorna XML
+        action='/webhook/call-completed', 
         method='POST',
         timeout=30,
         record='record-from-answer',
         recording_status_callback='/webhook/recording',
         recording_status_callback_method='POST',
-        recording_status_callback_event='completed' # String, não lista
+        recording_status_callback_event='completed' 
     )
-    
-    # Eventos do status_callback convertidos para string
-    events = 'initiated ringing answered completed'
     
     dial.number(
         destination,
-        status_callback_event=events, # Passando string "a b c", não lista ['a','b']
-        status_callback='/webhook/call-status', # Esse continua sendo JSON (async)
+        status_callback_event='initiated ringing answered completed', 
+        status_callback='/webhook/call-status', 
         status_callback_method='POST'
     )
     
     response.append(dial)
-    
-    # Se o Dial falhar (ninguém atender), cai aqui
     response.say('A ligação não pode ser completada.', language='pt-BR', voice='Polly.Camila')
-    
     return str(response)
 
 def _create_no_destination_response() -> tuple[Response, int]:
@@ -257,7 +241,7 @@ def _create_error_response(msg: str) -> tuple[Response, int]:
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    return jsonify({'status': 'healthy', 'version': '2.2-final'}), 200
+    return jsonify({'status': 'healthy', 'version': '2.3-schema-fix'}), 200
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5001))
