@@ -2,9 +2,6 @@
 # CALL TRACKER - STREAMLIT CONFIGURATION
 # ============================================================
 # Documentação: https://docs.streamlit.io/library/advanced-features/configuration
-[global]
-python = "3.11" 
-
 # ============================================================
 # THEME - Aparência Visual
 # ============================================================
