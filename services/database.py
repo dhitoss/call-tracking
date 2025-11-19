@@ -268,6 +268,27 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"❌ Database health check failed: {e}")
             return False
+    # ========================================================================
+    # TAGS
+    # ========================================================================
+    
+
+    def update_call_tag(self, call_sid: str, tag: str) -> bool:
+        """Atualiza a tag de uma chamada."""
+        try:
+            # Se a tag for "Limpar" ou vazia, salvamos como null
+            value = tag if tag and tag != "Limpar" else None
+            
+            self.client.table('calls').update({
+                'tags': value,
+                'updated_at': datetime.utcnow().isoformat()
+            }).eq('call_sid', call_sid).execute()
+            
+            logger.info(f"🏷️ Tag updated: {call_sid} -> {value}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error updating tag: {e}")
+            return False        
 
 @lru_cache()
 def get_database_service() -> DatabaseService:

@@ -12,6 +12,24 @@ import plotly.express as px
 import plotly.graph_objects as go
 from urllib.parse import urlencode
 
+# Configuração de Tags e Cores
+TAG_OPTIONS = [
+    "Agendado", "Reagendado", "Cancelado", 
+    "Retornar ligação", "Enviar info", 
+    "Sem vaga", "Não Agendou", "Ligação errada"
+]
+
+TAG_COLORS = {
+    "Agendado": "#28a745",          # Verde
+    "Reagendado": "#17a2b8",        # Azul Claro
+    "Cancelado": "#dc3545",         # Vermelho
+    "Retornar ligação": "#ffc107",  # Amarelo
+    "Enviar info": "#6c757d",       # Cinza
+    "Sem vaga": "#343a40",          # Cinza Escuro
+    "Não Agendou": "#fd7e14",       # Laranja
+    "Ligação errada": "#000000"     # Preto
+}
+
 # ============================================================================
 # CONFIGURAÇÃO
 # ============================================================================
@@ -98,6 +116,8 @@ def get_calls(days=30, status=None, campaign=None):
             df['recording_url'] = None
         if 'duration' not in df.columns:
             df['duration'] = 0
+        if 'tags' not in df.columns:
+            df['tags'] = None
     
     return df
 
@@ -112,6 +132,19 @@ def get_tracking_sources():
     """Busca tracking sources com cache"""
     result = supabase.table('tracking_sources').select('*').execute()
     return pd.DataFrame(result.data) if result.data else pd.DataFrame()
+
+def update_call_tag(call_sid, tag):
+    """Atualiza tag no banco de dados"""
+    try:
+        val = tag if tag and tag != "Limpar" else None
+        supabase.table('calls').update({
+            'tags': val,
+            'updated_at': datetime.utcnow().isoformat()
+        }).eq('call_sid', call_sid).execute()
+        return True
+    except Exception as e:
+        print(f"Erro ao atualizar tag: {e}")
+        return False
 
 def format_phone_br(phone):
     """Formata número brasileiro"""
@@ -464,7 +497,7 @@ elif page == "Gerenciar Rotas":
                 st.error(f"Erro ao ler arquivo: {str(e)}")
 
 # ============================================================================
-# PÁGINA: CHAMADAS
+# PÁGINA: CHAMADAS (ATUALIZADA COM EDITOR DE TAGS)
 # ============================================================================
 
 elif page == "Chamadas":
@@ -517,49 +550,54 @@ elif page == "Chamadas":
         
         st.divider()
         
-        # Tabela de chamadas
+        # Preparar DataFrame para exibição
         display_df = df.copy()
-        display_df['created_at'] = pd.to_datetime(display_df['created_at'], format='ISO8601').dt.strftime('%d/%m/%Y %H:%M:%S')
+        display_df['created_at'] = pd.to_datetime(display_df['created_at']).dt.strftime('%d/%m/%Y %H:%M')
         display_df['duration'] = display_df['duration'].apply(format_duration)
-        display_df['has_recording'] = display_df['recording_url'].notna().apply(lambda x: 'Sim' if x else 'Não')
         
-        # Selecionar colunas disponíveis
-        columns_to_show = []
-        col_names = []
-        
-        if 'created_at' in display_df.columns:
-            columns_to_show.append('created_at')
-            col_names.append('Data/Hora')
-        if 'from_number' in display_df.columns:
-            columns_to_show.append('from_number')
-            col_names.append('Origem')
-        if 'to_number' in display_df.columns:
-            columns_to_show.append('to_number')
-            col_names.append('Para (Rastreado)')
-        if 'destination_number' in display_df.columns:
-            columns_to_show.append('destination_number')
-            col_names.append('Redirecionado')
-        if 'status' in display_df.columns:
-            columns_to_show.append('status')
-            col_names.append('Status')
-        if 'duration' in display_df.columns:
-            columns_to_show.append('duration')
-            col_names.append('Duração')
-        if 'campaign' in display_df.columns:
-            columns_to_show.append('campaign')
-            col_names.append('Campanha')
-        if 'has_recording' in display_df.columns:
-            columns_to_show.append('has_recording')
-            col_names.append('Gravação')
-        
-        display_df = display_df[columns_to_show]
-        display_df.columns = col_names
-        
-        st.dataframe(
-            display_df,
+        if 'tags' not in display_df.columns:
+            display_df['tags'] = None
+
+        st.subheader("Lista de Chamadas")
+        st.caption("Dica: Você pode editar a coluna 'Tag' diretamente na tabela abaixo.")
+
+        # Tabela Editável
+        edited_df = st.data_editor(
+            display_df[['created_at', 'from_number', 'to_number', 'status', 'duration', 'campaign', 'tags', 'call_sid']],
+            column_config={
+                "tags": st.column_config.SelectboxColumn(
+                    "Tag (Classificação)",
+                    help="Selecione a classificação da chamada",
+                    width="medium",
+                    options=TAG_OPTIONS,
+                    required=False
+                ),
+                "call_sid": None, # Ocultar
+                "created_at": "Data",
+                "from_number": "De",
+                "to_number": "Para",
+                "status": "Status",
+                "duration": "Duração",
+                "campaign": "Campanha"
+            },
+            hide_index=True,
             use_container_width=True,
-            hide_index=True
+            key="calls_editor"
         )
+
+        # Lógica de salvamento da tabela
+        if len(edited_df) == len(display_df):
+            diffs = edited_df['tags'] != display_df['tags']
+            if diffs.any():
+                changed_rows = edited_df[diffs]
+                for index, row in changed_rows.iterrows():
+                    new_tag = row['tags']
+                    sid = row['call_sid']
+                    update_call_tag(sid, new_tag)
+                    st.toast(f"Tag atualizada: {new_tag}")
+                
+                # Limpa cache para atualizar na próxima interação
+                clear_cache()
         
         # Exportar
         st.subheader("Exportar Dados")
@@ -589,7 +627,7 @@ elif page == "Chamadas":
         st.info("Nenhuma chamada encontrada com os filtros selecionados")
 
 # ============================================================================
-# PÁGINA: GRAVAÇÕES
+# PÁGINA: GRAVAÇÕES (ATUALIZADA COM CORES E SELETOR)
 # ============================================================================
 
 elif page == "Gravações":
@@ -618,27 +656,69 @@ elif page == "Gravações":
         
         # Listar gravações
         for idx, call in recordings_df.iterrows():
-            # Proteção contra dados faltantes usando .get()
+            # Proteção
             dest = call.get('destination_number') or 'N/A'
             camp = call.get('campaign') or 'N/A'
             dur = format_duration(call.get('recording_duration', 0))
+            current_tag = call.get('tags')
             
-            with st.expander(f"{call['created_at'][:10]} | {call['from_number']} → {call['to_number']}", expanded=False):
-                col1, col2 = st.columns([2, 1])
+            # Header visual
+            header_emoji = "⬜"
+            if current_tag in TAG_COLORS:
+                header_emoji = "🏷️"
+
+            header_text = f"{header_emoji} {call['created_at'][:10]} | {call['from_number']} "
+            if current_tag:
+                header_text += f"[{current_tag}]"
+
+            with st.expander(header_text, expanded=False):
+                col1, col2, col3 = st.columns([2, 1, 1])
                 
                 with col1:
-                    st.write(f"**Origem:** {call['from_number']}")
-                    st.write(f"**Destino Rastreado:** {call['to_number']}")
-                    st.write(f"**Redirecionado Para:** {dest}")  # <--- CORRIGIDO AQUI
-                    st.write(f"**Data/Hora:** {call['created_at']}")
-                    st.write(f"**Duração:** {dur}")
-                    st.write(f"**Campanha:** {camp}")
-                    st.write(f"**Status:** {call['status']}")
+                    st.markdown(f"**Origem:** `{call['from_number']}`")
+                    st.markdown(f"**Destino:** `{call['to_number']}` → `{dest}`")
+                    st.text(f"Data: {call['created_at']}")
+                    st.text(f"Status: {call['status']}")
                 
                 with col2:
                     if call.get('recording_url'):
                         st.audio(call['recording_url'])
                         st.link_button("Abrir no Twilio", call['recording_url'], use_container_width=True)
+
+                with col3:
+                    # Seletor de Tag
+                    st.markdown("### Classificação")
+                    
+                    # Índice atual
+                    tag_index = None
+                    if current_tag in TAG_OPTIONS:
+                        tag_index = TAG_OPTIONS.index(current_tag)
+                    
+                    selected_tag = st.selectbox(
+                        "Definir Tag",
+                        ["Limpar"] + TAG_OPTIONS,
+                        index=tag_index + 1 if tag_index is not None else 0,
+                        key=f"tag_{call['call_sid']}",
+                        label_visibility="collapsed"
+                    )
+                    
+                    # Lógica Update
+                    new_val = selected_tag if selected_tag != "Limpar" else None
+                    if new_val != current_tag:
+                        if update_call_tag(call['call_sid'], new_val):
+                            st.success("Salvo!")
+                            clear_cache()
+                            import time
+                            time.sleep(0.5)
+                            st.rerun()
+
+                    # Badge colorido
+                    if current_tag and current_tag in TAG_COLORS:
+                        cor = TAG_COLORS[current_tag]
+                        st.markdown(
+                            f'<div style="background-color: {cor}; color: white; padding: 5px 10px; border-radius: 5px; text-align: center; font-weight: bold;">{current_tag}</div>', 
+                            unsafe_allow_html=True
+                        )
 
 # ============================================================================
 # PÁGINA: ANALYTICS AVANÇADO
