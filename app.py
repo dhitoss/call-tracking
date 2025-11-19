@@ -709,17 +709,33 @@ elif page == "Chamadas":
 
         # Lógica de salvamento da tabela
         if len(edited_df) == len(display_df):
-            diffs = edited_df['tags'] != display_df['tags']
+            # Normaliza ambos os lados para string vazia antes de comparar
+            # Isso evita o bug onde None != NaN ou NaN != NaN
+            original_tags = display_df['tags'].fillna("").astype(str)
+            new_tags = edited_df['tags'].fillna("").astype(str)
+            
+            diffs = original_tags != new_tags
+            
             if diffs.any():
-                changed_rows = edited_df[diffs]
-                for index, row in changed_rows.iterrows():
+                # Pega os índices onde houve mudança
+                changed_indices = diffs[diffs].index
+                
+                for idx in changed_indices:
+                    row = edited_df.loc[idx]
                     new_tag = row['tags']
                     sid = row['call_sid']
-                    update_call_tag(sid, new_tag)
-                    st.toast(f"Tag atualizada: {new_tag}")
+                    
+                    # Verifica se é None ou string vazia para limpar
+                    tag_to_save = new_tag if new_tag and new_tag.strip() != "" else "Limpar"
+                    
+                    update_call_tag(sid, tag_to_save)
+                    st.toast(f"Tag atualizada para: {tag_to_save}")
                 
-                # Limpa cache para atualizar na próxima interação
+                # Limpa cache e força rerun apenas se houve mudança real
                 clear_cache()
+                import time
+                time.sleep(0.5) # Pequeno delay para garantir sync do banco
+                st.rerun()
         
         # Exportar
         st.subheader("Exportar Dados")
