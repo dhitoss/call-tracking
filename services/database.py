@@ -1,5 +1,6 @@
 """
-Database Service - COMPLETO (Telefonia + CRM + Timeline)
+Database Service - COMPLETO (v2.7)
+Inclui: Telefonia, CRM, Logs, Leads Manuais e Relatórios de Marketing.
 """
 from supabase import create_client, Client
 from typing import List, Optional, Dict, Any
@@ -39,13 +40,11 @@ class DatabaseService:
     
     def get_destination_number(self, tracking_number: str, campaign: str = None) -> Optional[str]:
         try:
-            # 1. Tenta campanha específica
             if campaign:
                 res = self.client.table('phone_routing').select('destination_number')\
                     .eq('tracking_number', tracking_number).eq('is_active', True).eq('campaign', campaign).execute()
                 if res.data: return res.data[0]['destination_number']
 
-            # 2. Fallback genérico
             res = self.client.table('phone_routing').select('destination_number')\
                 .eq('tracking_number', tracking_number).eq('is_active', True).is_('campaign', 'null').execute()
             
@@ -57,6 +56,15 @@ class DatabaseService:
     def add_phone_routing(self, tracking: str, destination: str, campaign: str = None):
         data = {'tracking_number': tracking, 'destination_number': destination, 'campaign': campaign, 'is_active': True}
         return self.client.table('phone_routing').insert(data).execute()
+
+    def get_routes(self):
+        """Retorna todas as rotas configuradas."""
+        try:
+            res = self.client.table('phone_routing').select('*').order('created_at', desc=True).execute()
+            return res.data if res.data else []
+        except Exception as e:
+            logger.error(f"Get routes error: {e}")
+            return []
 
     # ========================================================================
     # 2. TRACKING & REGISTRO DE CHAMADAS
@@ -104,11 +112,10 @@ class DatabaseService:
             return False
 
     # ========================================================================
-    # 3. CRM & KANBAN (Novas Funções)
+    # 3. CRM, KANBAN & INTERAÇÕES
     # ========================================================================
 
     def update_deal_stage(self, deal_id: str, new_stage_id: str) -> bool:
-        """Move o card para outra coluna."""
         try:
             self.client.table('deals').update({
                 'stage_id': new_stage_id,
@@ -120,9 +127,7 @@ class DatabaseService:
             return False
 
     def get_contact_timeline(self, contact_id: str) -> List[Dict[str, Any]]:
-        """Busca todo o histórico do contato (Timeline)."""
         try:
-            # Busca eventos ordenados do mais recente para o antigo
             result = self.client.table('timeline_events')\
                 .select('*')\
                 .eq('contact_id', contact_id)\
@@ -133,109 +138,61 @@ class DatabaseService:
             logger.error(f"❌ Error fetching timeline: {e}")
             return []
 
-    def health_check(self) -> bool:
-        try:
-            self.client.table('calls').select('call_sid').limit(1).execute()
-            return True
-        except: return False
-
-
-    # ========================================================================
-    # 4. GESTÃO MANUAL & INTERAÇÕES
-    # ========================================================================
-
     def create_manual_lead(self, name: str, phone: str, source: str, note: str = None) -> bool:
-        """Cria um lead manualmente (Balcão, Indicação, etc)."""
         try:
             now = datetime.utcnow().isoformat()
-            
-            # 1. Cria/Busca Contato
-            # Tenta inserir, se der conflito no telefone, pega o existente
             contact_res = self.client.table('contacts').select('id').eq('phone_number', phone).execute()
             
             if contact_res.data:
                 contact_id = contact_res.data[0]['id']
-                # Atualiza nome se estava vazio
                 self.client.table('contacts').update({'name': name}).eq('id', contact_id).execute()
             else:
                 new_contact = {'phone_number': phone, 'name': name, 'created_at': now}
                 res = self.client.table('contacts').insert(new_contact).execute()
                 contact_id = res.data[0]['id']
 
-            # 2. Pega estágio padrão (Inbox)
             stage_res = self.client.table('pipeline_stages').select('id').eq('is_default', True).limit(1).execute()
             stage_id = stage_res.data[0]['id'] if stage_res.data else None
 
-            # 3. Cria Deal
             deal_data = {
-                'contact_id': contact_id,
-                'stage_id': stage_id,
-                'title': f"Lead Manual: {name}",
-                'status': 'OPEN',
-                'source': source,
-                'last_activity_at': now
+                'contact_id': contact_id, 'stage_id': stage_id, 'title': f"Lead Manual: {name}",
+                'status': 'OPEN', 'source': source, 'last_activity_at': now
             }
             deal_res = self.client.table('deals').insert(deal_data).execute()
-            deal_id = deal_res.data[0]['id']
-
-            # 4. Registra na Timeline
-            self.client.table('timeline_events').insert({
-                'contact_id': contact_id,
-                'deal_id': deal_id,
-                'event_type': 'MANUAL_ENTRY',
-                'description': f"Lead criado manualmente ({source}). Nota: {note or 'Sem nota'}",
-                'created_at': now
-            }).execute()
             
+            self.client.table('timeline_events').insert({
+                'contact_id': contact_id, 'deal_id': deal_res.data[0]['id'], 'event_type': 'MANUAL_ENTRY',
+                'description': f"Lead criado manualmente ({source}). Nota: {note}", 'created_at': now
+            }).execute()
             return True
         except Exception as e:
-            logger.error(f"❌ Error creating manual lead: {e}")
+            logger.error(f"Manual lead error: {e}")
             return False
 
-    def log_interaction(self, deal_id: str, contact_id: str, type: str, description: str):
-        """Registra uma interação (ex: WhatsApp) e reseta o SLA."""
+    def log_interaction(self, deal_id, contact_id, type, description):
         try:
             now = datetime.utcnow().isoformat()
-            
-            # 1. Registra na timeline
             self.client.table('timeline_events').insert({
-                'contact_id': contact_id,
-                'deal_id': deal_id,
-                'event_type': type,
-                'description': description,
-                'created_at': now
+                'contact_id': contact_id, 'deal_id': deal_id, 'event_type': type,
+                'description': description, 'created_at': now
             }).execute()
-            
-            # 2. Atualiza o Deal (Reseta SLA trazendo para o topo)
             self.client.table('deals').update({'last_activity_at': now}).eq('id', deal_id).execute()
             return True
-        except Exception as e:
-            logger.error(f"❌ Error logging interaction: {e}")
-            return False
+        except Exception: return False
 
     # ========================================================================
-    # 5. TRACKING DNI E UTM
+    # 4. RELATÓRIOS DE MARKETING
     # ========================================================================
 
-    def get_marketing_performance(self):
-        """
-        Retorna performance agrupada por Tracking Source (UTMs).
-        Cruza tabela de sources com calls e deals.
-        """
+    def get_marketing_performance(self) -> List[Dict[str, Any]]:
+        """Retorna dados para o relatório de atribuição."""
         try:
-            # 1. Busca todas as fontes
             sources = self.client.table('tracking_sources').select('*').execute().data
-            
             if not sources: return []
             
             performance = []
             for s in sources:
-                # Contar chamadas para esta fonte
                 calls = self.client.table('calls').select('call_sid', count='exact').eq('tracking_source_id', s['id']).execute()
-                
-                # Contar leads gerados (deals associados a contatos dessas chamadas é complexo no MVP, 
-                # vamos focar em chamadas primeiro)
-                
                 performance.append({
                     "Source": s.get('utm_source', 'Direto'),
                     "Campaign": s.get('utm_campaign', '-'),
@@ -244,13 +201,17 @@ class DatabaseService:
                     "Calls": calls.count or 0,
                     "Last Active": s.get('last_call_at')
                 })
-            
-            # Ordenar por volume de chamadas
             return sorted(performance, key=lambda x: x['Calls'], reverse=True)
-            
         except Exception as e:
             logger.error(f"Marketing stats error: {e}")
             return []
+
+    def health_check(self) -> bool:
+        try:
+            self.client.table('calls').select('call_sid').limit(1).execute()
+            return True
+        except: return False
+
 @lru_cache()
 def get_database_service() -> DatabaseService:
     return DatabaseService()
