@@ -1,6 +1,5 @@
 """
-Serviço de CRM - Lógica de Negócio
-Gerencia a criação automática de Cards e Contatos baseada nas chamadas.
+CRM Service - Lógica de Negócio (Multi-Tenancy)
 """
 import logging
 from datetime import datetime
@@ -12,105 +11,94 @@ db = get_database_service()
 class CRMService:
     
     def handle_incoming_call_event(self, call_data):
-        """
-        Executado toda vez que uma chamada é finalizada.
-        1. Cria/Busca Contato
-        2. Cria/Atualiza Deal (Card)
-        3. Registra na Timeline
-        """
         try:
             phone = call_data['from_number']
+            org_id = call_data.get('organization_id')
             
-            # 1. BUSCAR OU CRIAR CONTATO (Pessoa)
-            contact = self._get_or_create_contact(phone)
+            if not org_id:
+                logger.warning(f"Skipping CRM for {phone}: No Organization ID")
+                return
+
+            # 1. Contato (Scoped by Org)
+            contact = self._get_or_create_contact(phone, org_id)
             
-            # 2. GERENCIAR O DEAL (Card)
-            # A regra é: Se ligou, o card vai pro topo (LIFO).
-            # Se já tem card aberto, atualiza a data. Se não, cria novo no Inbox.
-            self._upsert_deal_from_call(contact['id'], call_data)
+            # 2. Deal (Scoped by Org)
+            self._upsert_deal_from_call(contact['id'], call_data, org_id)
             
-            logger.info(f"✅ CRM Updated for {phone}")
+            logger.info(f"✅ CRM Processed for {phone} @ Org {org_id}")
             
         except Exception as e:
-            # IMPORTANTE: Loga o erro mas não quebra a aplicação principal
-            logger.error(f"❌ CRM Update Failed: {e}", exc_info=True)
+            logger.error(f"❌ CRM Failed: {e}", exc_info=True)
 
-    def _get_or_create_contact(self, phone):
-        # Verifica se já existe
-        res = db.client.table('contacts').select('*').eq('phone_number', phone).execute()
+    def _get_or_create_contact(self, phone, org_id):
+        # Busca considerando ORG
+        res = db.client.table('contacts').select('*').eq('phone_number', phone).eq('organization_id', org_id).execute()
         if res.data:
             return res.data[0]
         
-        # Cria novo
+        # Cria Novo
         new_contact = {
             'phone_number': phone,
-            'name': f"Lead {phone[-4:]}", # Ex: Lead 8899
+            'name': f"Lead {phone[-4:]}",
+            'organization_id': org_id,
             'created_at': datetime.utcnow().isoformat(),
             'last_activity_at': datetime.utcnow().isoformat()
         }
         res = db.client.table('contacts').insert(new_contact).execute()
         return res.data[0]
 
-    def _upsert_deal_from_call(self, contact_id, call_data):
-        # Busca se já existe um deal ABERTO para este contato
+    def _upsert_deal_from_call(self, contact_id, call_data, org_id):
+        # Busca deal aberto
         existing_deal = db.client.table('deals')\
             .select('*')\
             .eq('contact_id', contact_id)\
+            .eq('organization_id', org_id)\
             .eq('status', 'OPEN')\
             .execute()
             
         now = datetime.utcnow().isoformat()
-        
-        # Busca o ID do estágio padrão (Inbox) para garantir
         default_stage_id = self._get_default_stage_id()
 
         if existing_deal.data:
-            # CENÁRIO: Já tem negócio aberto.
+            # RESSURREIÇÃO: Volta pro Inbox
             deal_id = existing_deal.data[0]['id']
             old_stage = existing_deal.data[0]['stage_id']
             
-            # LÓGICA DE RESSURREIÇÃO:
-            # Se o cliente ligou, trazemos ele de volta para o Inbox (default_stage)
-            # para garantir que o time veja a nova interação.
-            
-            update_data = {
-                'last_activity_at': now,
-                'stage_id': default_stage_id # <--- AQUI: Movemos de volta pro Inbox
-            }
-            
+            update_data = {'last_activity_at': now, 'stage_id': default_stage_id}
             db.client.table('deals').update(update_data).eq('id', deal_id).execute()
             
-            # Registra na timeline o motivo do movimento
             if old_stage != default_stage_id:
-                self._add_timeline_event(contact_id, deal_id, "SYSTEM", "Card movido para Inbox (Nova interação detectada)", {})
+                self._add_timeline_event(contact_id, deal_id, "SYSTEM", "Movido para Inbox (Nova Interação)", {}, org_id)
             
-            self._add_timeline_event(contact_id, deal_id, "CALL_INBOUND", "Cliente ligou novamente", call_data)
+            self._add_timeline_event(contact_id, deal_id, "CALL_INBOUND", "Nova chamada recebida", call_data, org_id)
             
         else:
-            # CENÁRIO: Novo negócio
+            # Novo Deal
             new_deal = {
                 'contact_id': contact_id,
                 'stage_id': default_stage_id,
                 'title': f"Ligação de {call_data['from_number']}",
                 'status': 'OPEN',
                 'source': 'voice',
+                'organization_id': org_id,
                 'last_activity_at': now
             }
             res = db.client.table('deals').insert(new_deal).execute()
             deal_id = res.data[0]['id']
             
-            self._add_timeline_event(contact_id, deal_id, "CALL_INBOUND", "Nova chamada recebida (Lead Criado)", call_data)
+            self._add_timeline_event(contact_id, deal_id, "CALL_INBOUND", "Lead criado via telefone", call_data, org_id)
 
     def _get_default_stage_id(self):
-        # Busca o ID da coluna "Inbox" (is_default = true)
+        # Idealmente filtraria por org se stages fossem customizados por cliente
+        # Por enquanto assume stages globais
         res = db.client.table('pipeline_stages').select('id').eq('is_default', True).limit(1).execute()
-        if res.data:
-            return res.data[0]['id']
-        # Fallback (pega o primeiro que achar)
+        if res.data: return res.data[0]['id']
         res = db.client.table('pipeline_stages').select('id').limit(1).execute()
         return res.data[0]['id'] if res.data else None
 
-    def _add_timeline_event(self, contact_id, deal_id, event_type, desc, metadata):
+    def _add_timeline_event(self, contact_id, deal_id, event_type, desc, metadata, org_id=None):
+        # Timeline não tem org_id explícito na tabela atual, mas herda do contact.
+        # Mantemos simples.
         event = {
             'contact_id': contact_id,
             'deal_id': deal_id,
