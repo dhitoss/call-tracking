@@ -1,8 +1,7 @@
 """
-Call Tracking Dashboard v2.4
-- Fix: AttributeError em leads manuais (Metadata Check)
-- Fix: Navegação mantida após criar lead
-- Feat: Redirecionamento automático para CRM
+Call Tracking Dashboard v2.5 (MVP Pilot)
+- Feat: Sistema de Login (Gatekeeper)
+- Core: CRM, IA, Telefonia
 """
 
 import streamlit as st
@@ -17,447 +16,283 @@ import pytz
 # --- IMPORTS DOS SERVIÇOS ---
 from services.database import get_database_service
 from services.ai_service import AIService
+from services.auth import AuthService
 
 # Inicialização
 db_service = get_database_service()
 ai_service = AIService()
+auth_service = AuthService()
 
-# --- CONFIGURAÇÃO DE FUSO HORÁRIO ---
-TZ_NAME = os.getenv('DEFAULT_TIMEZONE', 'America/Sao_Paulo')
-try:
-    LOCAL_TZ = pytz.timezone(TZ_NAME)
-except:
-    LOCAL_TZ = pytz.timezone('America/Sao_Paulo')
-
-# Configuração de Tags e Cores
-TAG_OPTIONS = [
-    "Agendado", "Reagendado", "Cancelado", 
-    "Retornar ligação", "Enviar info", 
-    "Sem vaga", "Não Agendou", "Ligação errada"
-]
-
-TAG_COLORS = {
-    "Agendado": "#28a745",          # Verde
-    "Reagendado": "#17a2b8",        # Azul Claro
-    "Cancelado": "#dc3545",         # Vermelho
-    "Retornar ligação": "#ffc107",  # Amarelo
-    "Enviar info": "#6c757d",       # Cinza
-    "Sem vaga": "#343a40",          # Cinza Escuro
-    "Não Agendou": "#fd7e14",       # Laranja
-    "Ligação errada": "#000000"     # Preto
-}
-
-# ============================================================================
-# CONFIGURAÇÃO DA PÁGINA
-# ============================================================================
-
+# --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
-    page_title="Call Tracking",
-    page_icon="📞",
+    page_title="Call Tracking CRM",
+    page_icon="🔐",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
+# --- CSS ---
 st.markdown("""
 <style>
     .metric-card { background-color: #f0f2f6; padding: 20px; border-radius: 10px; border-left: 4px solid #1f77b4; }
     .tag-badge { padding: 4px 8px; border-radius: 4px; color: white; font-weight: bold; font-size: 0.85em; display: inline-block; }
     .stTabs [data-baseweb="tab-list"] { gap: 24px; }
     .stTabs [data-baseweb="tab"] { padding: 10px 20px; }
-    
-    /* SLA Badges */
     .sla-green { border-left: 5px solid #22c55e; padding-left: 10px; }
     .sla-yellow { border-left: 5px solid #eab308; padding-left: 10px; }
     .sla-red { border-left: 5px solid #ef4444; padding-left: 10px; background-color: #fff5f5; }
+    /* Centralizar Login */
+    div[data-testid="stForm"] { border: 1px solid #ddd; padding: 20px; border-radius: 10px; max-width: 400px; margin: 0 auto; }
 </style>
 """, unsafe_allow_html=True)
 
-# Supabase
+# Supabase (para queries diretas se necessário)
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
-if not SUPABASE_URL or not SUPABASE_KEY:
-    st.error("Configuração ausente: SUPABASE_URL/KEY")
-    st.stop()
+if not SUPABASE_URL: st.stop()
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ============================================================================
-# FUNÇÕES AUXILIARES
+# 🔐 LÓGICA DE LOGIN (GATEKEEPER)
 # ============================================================================
 
-def convert_to_local(df, col_name='created_at'):
-    """Converte coluna de data do DataFrame para o fuso local"""
-    if df.empty or col_name not in df.columns:
-        return df
-    df[col_name] = pd.to_datetime(df[col_name], format='mixed', utc=True)
-    df[col_name] = df[col_name].dt.tz_convert(LOCAL_TZ)
+if not auth_service.is_logged_in():
+    col1, col2, col3 = st.columns([1,2,1])
+    with col2:
+        st.markdown("<br><br>", unsafe_allow_html=True)
+        st.markdown("<h1 style='text-align: center;'>🔐 Acesso Restrito</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: gray;'>Call Tracking & CRM Intelligence</p>", unsafe_allow_html=True)
+        
+        with st.form("login_form"):
+            email = st.text_input("E-mail")
+            password = st.text_input("Senha", type="password")
+            submit = st.form_submit_button("Entrar", use_container_width=True)
+            
+            if submit:
+                user = auth_service.login(email, password)
+                if user:
+                    st.session_state['user'] = user
+                    st.toast("Login realizado com sucesso!")
+                    time.sleep(0.5)
+                    st.rerun()
+                else:
+                    st.error("Credenciais inválidas.")
+    st.stop() # 🛑 PARA AQUI SE NÃO TIVER LOGADO
+
+# ============================================================================
+# 🚀 APLICAÇÃO PRINCIPAL (AREA LOGADA)
+# ============================================================================
+
+# --- CONFIGURAÇÃO DE FUSO HORÁRIO ---
+TZ_NAME = os.getenv('DEFAULT_TIMEZONE', 'America/Sao_Paulo')
+try: LOCAL_TZ = pytz.timezone(TZ_NAME)
+except: LOCAL_TZ = pytz.timezone('America/Sao_Paulo')
+
+TAG_OPTIONS = ["Agendado", "Reagendado", "Cancelado", "Retornar ligação", "Enviar info", "Sem vaga", "Não Agendou", "Ligação errada"]
+TAG_COLORS = {"Agendado": "#28a745", "Reagendado": "#17a2b8", "Cancelado": "#dc3545", "Retornar ligação": "#ffc107", "Enviar info": "#6c757d", "Sem vaga": "#343a40", "Não Agendou": "#fd7e14", "Ligação errada": "#000000"}
+
+# --- FUNÇÕES AUXILIARES ---
+def convert_to_local(df, col='created_at'):
+    if df.empty or col not in df.columns: return df
+    df[col] = pd.to_datetime(df[col], format='mixed', utc=True).dt.tz_convert(LOCAL_TZ)
     return df
 
-def format_date_br(dt_obj):
-    if pd.isna(dt_obj): return ""
-    return dt_obj.strftime('%d/%m/%Y %H:%M')
-
-def format_duration(seconds):
-    try:
-        seconds = int(float(seconds or 0))
-        return f"{int(seconds//60):02d}:{int(seconds%60):02d}"
-    except: return "00:00"
-
+def format_date_br(dt): return dt.strftime('%d/%m/%Y %H:%M') if not pd.isna(dt) else ""
+def format_duration(s): return f"{int(s//60):02d}:{int(s%60):02d}" if s else "00:00"
 def clear_cache(): st.cache_data.clear()
 
 @st.cache_data(ttl=60)
 def get_calls(days=30, status=None, campaign=None):
-    start_date = datetime.now(timezone.utc) - timedelta(days=days)
-    query = supabase.table('calls').select('*').gte('created_at', start_date.isoformat())
-    
-    if status and status != "Todos": query = query.eq('status', status)
-    if campaign: query = query.eq('campaign', campaign)
-    
-    result = query.order('created_at', desc=True).execute()
-    df = pd.DataFrame(result.data) if result.data else pd.DataFrame()
-    
-    expected_cols = ['campaign', 'destination_number', 'recording_url', 'duration', 'tags', 'call_sid']
-    if len(df) > 0:
-        for col in expected_cols:
-            if col not in df.columns: df[col] = None
-            if col == 'duration': df[col] = df[col].fillna(0)
-        
-        # Conversão de fuso
-        df = convert_to_local(df, 'created_at')
-        
+    start = datetime.now(timezone.utc) - timedelta(days=days)
+    q = supabase.table('calls').select('*').gte('created_at', start.isoformat())
+    if status and status!="Todos": q = q.eq('status', status)
+    if campaign: q = q.eq('campaign', campaign)
+    res = q.order('created_at', desc=True).execute()
+    df = pd.DataFrame(res.data) if res.data else pd.DataFrame()
+    if not df.empty:
+        for c in ['duration','tags','campaign','destination_number','recording_url']: 
+            if c not in df.columns: df[c] = None
+        df['duration'] = df['duration'].fillna(0)
+        df = convert_to_local(df)
     return df
 
 @st.cache_data(ttl=60)
 def get_routes():
-    result = supabase.table('phone_routing').select('*').order('created_at', desc=True).execute()
-    return result.data if result.data else []
+    r = supabase.table('phone_routing').select('*').order('created_at', desc=True).execute()
+    return r.data if r.data else []
 
-# ============================================================================
-# SIDEBAR & NOVO LEAD MANUAL
-# ============================================================================
+def update_call_tag(call_sid, tag):
+    try:
+        val = tag if tag and tag != "Limpar" else None
+        supabase.table('calls').update({'tags': val, 'updated_at': datetime.utcnow().isoformat()}).eq('call_sid', call_sid).execute()
+        return True
+    except: return False
 
+# --- SIDEBAR ---
 st.sidebar.title("Call Tracking")
-st.sidebar.markdown(f"🕒 **Fuso:** {TZ_NAME}")
 
-# --- FORMULÁRIO DE NOVO LEAD MANUAL ---
-# Adicionado clear_on_submit=True para limpar os campos após envio
-with st.sidebar.expander("➕ Novo Lead Manual", expanded=False):
-    with st.form("new_lead_form", clear_on_submit=True):
-        nl_name = st.text_input("Nome")
-        nl_phone = st.text_input("Telefone (Ex: +55...)")
-        nl_source = st.selectbox("Origem", ["Balcão/Presencial", "Indicação", "Instagram Direct", "Outro"])
-        nl_note = st.text_area("Observação")
-        
-        if st.form_submit_button("Cadastrar"):
-            if nl_phone and nl_name:
-                if db_service.create_manual_lead(nl_name, nl_phone, nl_source, nl_note):
-                    st.success("Lead criado!")
-                    clear_cache()
-                    # Força o redirecionamento para o CRM
-                    st.session_state['nav_page'] = "CRM (Pipeline)"
-                    time.sleep(0.5)
-                    st.rerun()
-                else:
-                    st.error("Erro ao criar.")
-            else:
-                st.warning("Nome e Telefone obrigatórios.")
+# User Info
+with st.sidebar:
+    user_email = st.session_state['user'].email
+    st.caption(f"👤 **{user_email}**")
+    if st.button("Sair / Logout", use_container_width=True):
+        auth_service.logout()
+        st.rerun()
 
 st.sidebar.markdown("---")
 
-# Controle de Navegação Persistente
-if 'nav_page' not in st.session_state:
-    st.session_state['nav_page'] = "Dashboard Geral"
+# Novo Lead Manual
+with st.sidebar.expander("➕ Novo Lead Manual", expanded=False):
+    with st.form("new_lead_form", clear_on_submit=True):
+        nl_name = st.text_input("Nome")
+        nl_phone = st.text_input("Telefone")
+        nl_source = st.selectbox("Origem", ["Balcão", "Indicação", "Instagram", "Outro"])
+        nl_note = st.text_area("Nota")
+        if st.form_submit_button("Salvar"):
+            if nl_phone and nl_name:
+                if db_service.create_manual_lead(nl_name, nl_phone, nl_source, nl_note):
+                    st.success("Criado!"); clear_cache(); st.session_state['nav_page']="CRM (Pipeline)"; time.sleep(0.5); st.rerun()
+                else: st.error("Erro.")
 
-page = st.sidebar.radio(
-    "Navegação",
-    [
-        "Dashboard Geral",
-        "CRM (Pipeline)",
-        "Chamadas",
-        "Gravações",
-        "Gerenciar Rotas",
-        "Analytics Avançado",
-        "Configurações"
-    ],
-    key="nav_page" # Vincula o radio ao session_state para permitir controle via código
-)
+if 'nav_page' not in st.session_state: st.session_state['nav_page'] = "Dashboard Geral"
 
-if st.sidebar.button("Atualizar Dados", use_container_width=True):
-    clear_cache()
-    st.rerun()
+page = st.sidebar.radio("Menu", ["Dashboard Geral", "CRM (Pipeline)", "Chamadas", "Gravações", "Gerenciar Rotas", "Configurações"], key="nav_page")
+
+if st.sidebar.button("Atualizar", use_container_width=True): clear_cache(); st.rerun()
 
 # ============================================================================
-# PÁGINA: DASHBOARD GERAL
+# PÁGINAS (Conteúdo Protegido)
 # ============================================================================
 
 if page == "Dashboard Geral":
     st.title("Dashboard Geral")
-    col1, col2, col3 = st.columns(3)
-    with col1: period = st.selectbox("Período", [1, 7, 30, 90], index=2, key="dash_p")
-    with col2: 
-        if st.checkbox("Auto-refresh (60s)"):
-            time.sleep(60); st.rerun()
-    
+    col1, col2 = st.columns(2)
+    with col1: period = st.selectbox("Período", [7, 30, 90], index=1)
     df = get_calls(days=period)
-    
-    if len(df) > 0:
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Total", len(df))
-        c2.metric("Completadas", len(df[df['status']=='completed']), f"{(len(df[df['status']=='completed'])/len(df)*100):.1f}%")
-        c3.metric("Gravadas", len(df[df['recording_url'].notna()]))
-        c4.metric("Duração Méd.", format_duration(df['duration'].mean()))
-        c5.metric("Únicos", df['from_number'].nunique())
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Evolução Diária")
-            daily = df.groupby(df['created_at'].dt.date).size().reset_index(name='calls')
-            st.plotly_chart(px.area(daily, x='created_at', y='calls'), use_container_width=True)
-        with col2:
-            st.subheader("Status")
-            st.plotly_chart(px.pie(df, names='status'), use_container_width=True)
-
-        st.subheader("Últimas Chamadas")
-        recent = df.head(10).copy()
-        recent['Data'] = recent['created_at'].apply(format_date_br)
-        recent['Duração'] = recent['duration'].apply(format_duration)
-        st.dataframe(recent[['Data', 'from_number', 'status', 'Duração', 'tags']], use_container_width=True, hide_index=True)
+    if not df.empty:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Chamadas", len(df))
+        c2.metric("Atendidas", len(df[df['status']=='completed']))
+        c3.metric("Únicos", df['from_number'].nunique())
+        c4.metric("Duração", format_duration(df['duration'].mean()))
+        daily = df.groupby(df['created_at'].dt.date).size().reset_index(name='calls')
+        st.plotly_chart(px.area(daily, x='created_at', y='calls', title="Volume"), use_container_width=True)
     else: st.info("Sem dados.")
-
-# ============================================================================
-# PÁGINA: CRM / KANBAN
-# ============================================================================
 
 elif page == "CRM (Pipeline)":
     st.title("Pipeline de Atendimento")
-    
     stages = supabase.table('pipeline_stages').select('*').order('position').execute().data
-    # Busca deals e info do contato
     deals_raw = supabase.table('deals').select('*, contacts(id, phone_number, name)').eq('status', 'OPEN').order('last_activity_at', desc=True).execute().data
-    
     stage_map = {s['name']: s['id'] for s in stages}
     stage_names = [s['name'] for s in stages]
-    
-    # Processamento de Fuso para os Cards
     deals = []
     for d in deals_raw:
-        utc_dt = pd.to_datetime(d['last_activity_at']).replace(tzinfo=timezone.utc)
-        d['local_dt'] = utc_dt.astimezone(LOCAL_TZ)
+        utc = pd.to_datetime(d['last_activity_at']).replace(tzinfo=timezone.utc)
+        d['local_dt'] = utc.astimezone(LOCAL_TZ)
         deals.append(d)
 
-    # --- MODAL DETALHES ---
-    @st.dialog("Histórico do Lead", width="large")
+    @st.dialog("Detalhes", width="large")
     def show_lead_details(deal, contact_id):
         contact = deal['contacts']
-        phone = contact['phone_number']
-        st.subheader(f"{contact.get('name','Lead')} | {phone}")
-        
-        tab1, tab2 = st.tabs(["⏳ Linha do Tempo", "🤖 IA Intelligence"])
-        with tab1:
-            timeline = db_service.get_contact_timeline(contact_id)
-            if not timeline: st.info("Vazio.")
-            for ev in timeline:
-                icon = "📞" if 'CALL' in ev['event_type'] else "💬" if 'WHATS' in ev['event_type'] else "📝"
-                # Formatação segura da data
-                ev_dt = pd.to_datetime(ev['created_at']).replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ)
-                
-                with st.chat_message("assistant", avatar=icon):
-                    st.write(f"**{ev_dt.strftime('%d/%m %H:%M')}** - {ev['description']}")
-                    
-                    # CORREÇÃO DO ERRO: Verificação robusta de metadata
-                    meta = ev.get('metadata')
-                    if meta and isinstance(meta, dict):
-                        if meta.get('recording_url'): 
-                            st.audio(meta['recording_url'])
-                        if meta.get('new_tag'): 
-                            c = TAG_COLORS.get(meta['new_tag'], '#333')
-                            st.markdown(f":background[{c}] :color[white] **{meta['new_tag']}**")
-        
-        with tab2:
-            # Busca segura de gravação
-            calls_res = supabase.table('calls').select('*')\
-                .eq('from_number', phone)\
-                .ilike('recording_url', 'http%')\
-                .order('created_at', desc=True).limit(1).execute()
-            
-            if not calls_res.data:
-                calls_res = supabase.table('calls').select('*')\
-                    .eq('to_number', phone)\
-                    .ilike('recording_url', 'http%')\
-                    .order('created_at', desc=True).limit(1).execute()
-
-            if calls_res.data:
-                c = calls_res.data[0]
-                sid = c['call_sid']
-                c_date = pd.to_datetime(c['created_at']).replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ)
-                
-                st.info(f"Chamada de: {c_date.strftime('%d/%m %H:%M')}")
+        st.subheader(f"{contact.get('name')} | {contact['phone_number']}")
+        t1, t2 = st.tabs(["Timeline", "IA"])
+        with t1:
+            tl = db_service.get_contact_timeline(contact_id)
+            if not tl: st.info("Vazio")
+            for e in tl:
+                icon = "📞" if 'CALL' in e['event_type'] else "💬" if 'WHATS' in e['event_type'] else "📝"
+                dt = pd.to_datetime(e['created_at']).replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).strftime('%d/%m %H:%M')
+                st.markdown(f"{icon} **{dt}** - {e['description']}")
+                if e.get('metadata') and e['metadata'].get('recording_url'): st.audio(e['metadata']['recording_url'])
+        with t2:
+            phone = contact['phone_number']
+            c_res = supabase.table('calls').select('*').eq('from_number', phone).ilike('recording_url', 'http%').order('created_at', desc=True).limit(1).execute()
+            if not c_res.data: c_res = supabase.table('calls').select('*').eq('to_number', phone).ilike('recording_url', 'http%').order('created_at', desc=True).limit(1).execute()
+            if c_res.data:
+                c = c_res.data[0]
                 st.audio(c['recording_url'])
-                
-                ana = supabase.table('ai_analysis').select('*').eq('call_sid', sid).execute()
-                if ana.data:
-                    d = ana.data[0]
-                    color = "green" if d['sentiment']=='Positive' else "red" if d['sentiment']=='Negative' else "gray"
-                    st.markdown(f"### Sentimento: :{color}[{d['sentiment']}]")
-                    st.info(d['summary'])
-                    for t in (d['tags'] or []): st.markdown(f"`{t}`")
-                elif st.button("✨ Analisar com IA", key="btn_ai_analise"):
-                    with st.spinner("Analisando..."):
-                        if ai_service.process_call(sid, c['recording_url']): st.rerun()
-            else: 
-                st.warning("Nenhuma gravação válida para análise.")
+                if st.button("Analisar IA"):
+                    with st.spinner("..."): ai_service.process_call(c['call_sid'], c['recording_url']); st.rerun()
 
-    # --- COLUNAS KANBAN ---
     cols = st.columns(len(stages))
     for i, stage in enumerate(stages):
         with cols[i]:
             s_deals = [d for d in deals if d['stage_id'] == stage['id']]
             st.markdown(f"<div style='border-top:3px solid {stage.get('color','#ccc')};padding:5px;'><b>{stage['name']}</b> ({len(s_deals)})</div>", unsafe_allow_html=True)
-            
             for deal in s_deals:
-                # SLA CALC
-                now_utc = datetime.now(timezone.utc)
-                last_act_utc = pd.to_datetime(deal['last_activity_at']).replace(tzinfo=timezone.utc)
-                minutes_diff = (now_utc - last_act_utc).total_seconds() / 60
-                
-                sla_class = "sla-green"
-                sla_icon = "🔥"
-                if minutes_diff > 120: # 2h
-                    sla_class = "sla-red"; sla_icon = "🚨"
-                elif minutes_diff > 30: # 30m
-                    sla_class = "sla-yellow"; sla_icon = "⚠️"
+                now = datetime.now(timezone.utc)
+                diff = (now - pd.to_datetime(deal['last_activity_at']).replace(tzinfo=timezone.utc)).total_seconds()/60
+                sla = "sla-green"
+                if diff > 120: sla = "sla-red"
+                elif diff > 30: sla = "sla-yellow"
                 
                 with st.container():
-                    st.markdown(f"""
-                    <div class="{sla_class}" style="background-color:white; border-radius:5px; padding:10px; margin-bottom:10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                        <small>{deal['contacts'].get('name') or 'Lead'}</small><br>
-                        <strong>{deal['contacts']['phone_number']}</strong><br>
-                        <small>{sla_icon} Há {int(minutes_diff)} min</small>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
+                    st.markdown(f"""<div class="{sla}" style="background:white;border-radius:5px;padding:10px;margin-bottom:10px;box-shadow:0 1px 3px rgba(0,0,0,0.1);"><small>{deal['contacts'].get('name')}</small><br><strong>{deal['contacts']['phone_number']}</strong><br><small>{int(diff)} min atrás</small></div>""", unsafe_allow_html=True)
                     c1, c2 = st.columns(2)
                     with c1:
-                        # Botão WhatsApp
-                        phone_clean = deal['contacts']['phone_number'].replace('+','').replace('-','')
-                        wa_link = f"https://wa.me/{phone_clean}"
+                        pc = deal['contacts']['phone_number'].replace('+','').replace('-','')
                         if st.button("💬 Zap", key=f"w_{deal['id']}", use_container_width=True):
                             db_service.log_interaction(deal['id'], deal['contacts']['id'], "OUTBOUND_WHATSAPP", "Abriu WhatsApp")
-                            st.link_button("🔗 Abrir", wa_link)
-                            time.sleep(0.5); st.rerun()
+                            st.link_button("🔗 Link", f"https://wa.me/{pc}")
+                            time.sleep(1); st.rerun()
                     with c2:
-                        if st.button("📂 Ver", key=f"o_{deal['id']}", use_container_width=True):
-                            show_lead_details(deal, deal['contacts']['id'])
+                        if st.button("📂 Ver", key=f"o_{deal['id']}", use_container_width=True): show_lead_details(deal, deal['contacts']['id'])
                     
-                    # Mover
-                    curr = stage['name']
-                    try: idx = stage_names.index(curr)
-                    except: idx = 0
-                    new_s = st.selectbox("Mover", stage_names, index=idx, key=f"m_{deal['id']}", label_visibility="collapsed")
-                    if new_s != curr:
-                        db_service.update_deal_stage(deal['id'], stage_map[new_s])
-                        st.toast("Movido!"); time.sleep(0.5); st.rerun()
-
-# ============================================================================
-# PÁGINA: CHAMADAS (TABELA)
-# ============================================================================
+                    cur = stage['name']
+                    idx = stage_names.index(cur) if cur in stage_names else 0
+                    ns = st.selectbox("Mover", stage_names, index=idx, key=f"mv_{deal['id']}", label_visibility="collapsed")
+                    if ns != cur:
+                        db_service.update_deal_stage(deal['id'], stage_map[ns]); st.toast("Movido!"); time.sleep(0.5); st.rerun()
 
 elif page == "Chamadas":
     st.title("Histórico")
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: period = st.selectbox("Período", [1, 7, 30], index=1)
-    with c2: status = st.selectbox("Status", ["Todos", "completed", "missed"])
-    with c3: search = st.text_input("Busca")
-    
-    df = get_calls(days=period, status=status)
-    if search and not df.empty:
-        df = df[df['from_number'].astype(str).str.contains(search)]
-    
+    df = get_calls(days=30)
     if not df.empty:
         df['Data'] = df['created_at'].apply(format_date_br)
         df['Duração'] = df['duration'].apply(format_duration)
-        
-        edited = st.data_editor(
-            df[['Data', 'from_number', 'to_number', 'status', 'Duração', 'tags', 'call_sid']],
-            column_config={
-                "tags": st.column_config.SelectboxColumn("Tag", options=TAG_OPTIONS, width="medium"),
-                "call_sid": None,
-                "from_number": "Origem",
-                "to_number": "Destino"
-            },
-            hide_index=True, use_container_width=True, key="edit_calls"
-        )
-        
-        if len(edited) == len(df):
+        edited = st.data_editor(df[['Data','from_number','to_number','status','Duração','tags','call_sid']], column_config={"tags":st.column_config.SelectboxColumn("Tag",options=TAG_OPTIONS),"call_sid":None}, hide_index=True, use_container_width=True)
+        if len(edited)==len(df):
             orig = df['tags'].fillna("").astype(str)
             new = edited['tags'].fillna("").astype(str)
-            if (orig != new).any():
-                for idx in (orig != new).index[orig != new]:
-                    row = edited.loc[idx]
-                    tag = row['tags'] if row['tags'] and row['tags'].strip() else "Limpar"
-                    db_service.update_call_tag(row['call_sid'], tag)
-                    st.toast("Salvo!")
+            if (orig!=new).any():
+                for idx in (orig!=new).index[orig!=new]:
+                    r = edited.loc[idx]
+                    t = r['tags'] if r['tags'] and r['tags'].strip() else "Limpar"
+                    update_call_tag(r['call_sid'], t)
                 clear_cache(); time.sleep(0.5); st.rerun()
-    else: st.info("Vazio.")
-
-# ============================================================================
-# PÁGINA: GRAVAÇÕES
-# ============================================================================
 
 elif page == "Gravações":
     st.title("Gravações")
-    
     start = datetime.now(timezone.utc) - timedelta(days=7)
     res = supabase.table('calls').select('*').not_.is_('recording_url', 'null').gte('created_at', start.isoformat()).order('created_at', desc=True).execute()
-    
     if res.data:
         recs = pd.DataFrame(res.data)
-        recs = convert_to_local(recs, 'created_at')
-        
+        recs = convert_to_local(recs)
         st.metric("Total (7 dias)", len(recs))
-        
-        for _, call in recs.iterrows():
-            tag = call.get('tags')
+        for _, c in recs.iterrows():
+            tag = c.get('tags')
             emoji = "🏷️" if tag in TAG_COLORS else "⬜"
-            dt_str = format_date_br(call['created_at'])
-            
-            with st.expander(f"{emoji} {dt_str} | {call['from_number']}"):
-                c1, c2, c3 = st.columns([2,2,1])
-                with c1:
-                    st.caption(f"Status: {call['status']}")
-                    st.write(f"**Para:** {call['to_number']}")
-                with c2: st.audio(call['recording_url'])
+            dt = format_date_br(c['created_at'])
+            with st.expander(f"{emoji} {dt} | {c['from_number']}"):
+                c1,c2,c3 = st.columns([2,2,1])
+                with c1: st.write(f"**Para:** {c['to_number']}"); st.caption(f"Status: {c['status']}")
+                with c2: st.audio(c['recording_url'])
                 with c3:
                     idx = TAG_OPTIONS.index(tag) if tag in TAG_OPTIONS else 0
-                    n_tag = st.selectbox("Tag", ["Limpar"]+TAG_OPTIONS, index=idx+1 if tag in TAG_OPTIONS else 0, key=f"r_{call['call_sid']}", label_visibility="collapsed")
-                    if n_tag != (tag or "Limpar"):
-                        db_service.update_call_tag(call['call_sid'], n_tag if n_tag != "Limpar" else None)
+                    nt = st.selectbox("Tag", ["Limpar"]+TAG_OPTIONS, index=idx+1 if tag in TAG_OPTIONS else 0, key=f"g_{c['call_sid']}", label_visibility="collapsed")
+                    if nt != (tag or "Limpar"):
+                        update_call_tag(c['call_sid'], nt if nt!="Limpar" else None)
                         st.toast("Salvo!"); time.sleep(0.5); clear_cache(); st.rerun()
-
-# ============================================================================
-# PÁGINAS EXTRAS
-# ============================================================================
 
 elif page == "Gerenciar Rotas":
     st.title("Rotas")
-    with st.form("rota"):
-        c1, c2 = st.columns(2)
-        t = c1.text_input("Twilio (+55...)")
-        d = c2.text_input("Destino (+55...)")
-        if st.form_submit_button("Salvar"):
-            if t and d: 
-                db_service.add_phone_routing(t, d)
-                st.success("Ok!"); clear_cache(); st.rerun()
-    
+    with st.form("nr"):
+        t = st.text_input("Twilio"); d = st.text_input("Destino")
+        if st.form_submit_button("Salvar") and t and d:
+            db_service.add_phone_routing(t, d); st.success("Ok!"); clear_cache(); st.rerun()
     r = get_routes()
     if r: st.dataframe(r)
 
-elif page == "Analytics Avançado":
-    st.title("Analytics")
-    df = get_calls()
-    if not df.empty:
-        df['Hora'] = df['created_at'].dt.hour
-        st.bar_chart(df['Hora'].value_counts().sort_index())
-
 elif page == "Configurações":
     st.title("Configuração")
-    st.info(f"Fuso Horário Ativo: **{TZ_NAME}**")
+    st.info(f"Ambiente: {os.getenv('RAILWAY_ENVIRONMENT_NAME','Production')}")
