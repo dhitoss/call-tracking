@@ -1,9 +1,8 @@
 """
-Call Tracking Dashboard v2.3
-- Fix: Erro de Query no Modal (AttributeError)
-- Fix: Fuso Horário (BRT)
-- Feat: Entrada Manual de Leads
-- Feat: SLA Visual e Botão WhatsApp
+Call Tracking Dashboard v2.4
+- Fix: AttributeError em leads manuais (Metadata Check)
+- Fix: Navegação mantida após criar lead
+- Feat: Redirecionamento automático para CRM
 """
 
 import streamlit as st
@@ -140,8 +139,9 @@ st.sidebar.title("Call Tracking")
 st.sidebar.markdown(f"🕒 **Fuso:** {TZ_NAME}")
 
 # --- FORMULÁRIO DE NOVO LEAD MANUAL ---
+# Adicionado clear_on_submit=True para limpar os campos após envio
 with st.sidebar.expander("➕ Novo Lead Manual", expanded=False):
-    with st.form("new_lead_form"):
+    with st.form("new_lead_form", clear_on_submit=True):
         nl_name = st.text_input("Nome")
         nl_phone = st.text_input("Telefone (Ex: +55...)")
         nl_source = st.selectbox("Origem", ["Balcão/Presencial", "Indicação", "Instagram Direct", "Outro"])
@@ -152,7 +152,9 @@ with st.sidebar.expander("➕ Novo Lead Manual", expanded=False):
                 if db_service.create_manual_lead(nl_name, nl_phone, nl_source, nl_note):
                     st.success("Lead criado!")
                     clear_cache()
-                    time.sleep(1)
+                    # Força o redirecionamento para o CRM
+                    st.session_state['nav_page'] = "CRM (Pipeline)"
+                    time.sleep(0.5)
                     st.rerun()
                 else:
                     st.error("Erro ao criar.")
@@ -160,6 +162,10 @@ with st.sidebar.expander("➕ Novo Lead Manual", expanded=False):
                 st.warning("Nome e Telefone obrigatórios.")
 
 st.sidebar.markdown("---")
+
+# Controle de Navegação Persistente
+if 'nav_page' not in st.session_state:
+    st.session_state['nav_page'] = "Dashboard Geral"
 
 page = st.sidebar.radio(
     "Navegação",
@@ -171,7 +177,8 @@ page = st.sidebar.radio(
         "Gerenciar Rotas",
         "Analytics Avançado",
         "Configurações"
-    ]
+    ],
+    key="nav_page" # Vincula o radio ao session_state para permitir controle via código
 )
 
 if st.sidebar.button("Atualizar Dados", use_container_width=True):
@@ -224,7 +231,7 @@ elif page == "CRM (Pipeline)":
     st.title("Pipeline de Atendimento")
     
     stages = supabase.table('pipeline_stages').select('*').order('position').execute().data
-    # Importante: selecionar contacts(id, ...)
+    # Busca deals e info do contato
     deals_raw = supabase.table('deals').select('*, contacts(id, phone_number, name)').eq('status', 'OPEN').order('last_activity_at', desc=True).execute().data
     
     stage_map = {s['name']: s['id'] for s in stages}
@@ -250,25 +257,28 @@ elif page == "CRM (Pipeline)":
             if not timeline: st.info("Vazio.")
             for ev in timeline:
                 icon = "📞" if 'CALL' in ev['event_type'] else "💬" if 'WHATS' in ev['event_type'] else "📝"
+                # Formatação segura da data
                 ev_dt = pd.to_datetime(ev['created_at']).replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ)
                 
                 with st.chat_message("assistant", avatar=icon):
                     st.write(f"**{ev_dt.strftime('%d/%m %H:%M')}** - {ev['description']}")
-                    meta = ev.get('metadata', {})
-                    if meta.get('recording_url'): st.audio(meta['recording_url'])
-                    if meta.get('new_tag'): 
-                        c = TAG_COLORS.get(meta['new_tag'], '#333')
-                        st.markdown(f":background[{c}] :color[white] **{meta['new_tag']}**")
+                    
+                    # CORREÇÃO DO ERRO: Verificação robusta de metadata
+                    meta = ev.get('metadata')
+                    if meta and isinstance(meta, dict):
+                        if meta.get('recording_url'): 
+                            st.audio(meta['recording_url'])
+                        if meta.get('new_tag'): 
+                            c = TAG_COLORS.get(meta['new_tag'], '#333')
+                            st.markdown(f":background[{c}] :color[white] **{meta['new_tag']}**")
         
         with tab2:
-            # --- BUSCA ROBUSTA DE GRAVAÇÃO (CORREÇÃO DO ERRO) ---
-            # 1. Tenta origem
+            # Busca segura de gravação
             calls_res = supabase.table('calls').select('*')\
                 .eq('from_number', phone)\
                 .ilike('recording_url', 'http%')\
                 .order('created_at', desc=True).limit(1).execute()
             
-            # 2. Tenta destino (se não achou)
             if not calls_res.data:
                 calls_res = supabase.table('calls').select('*')\
                     .eq('to_number', phone)\
@@ -294,7 +304,7 @@ elif page == "CRM (Pipeline)":
                     with st.spinner("Analisando..."):
                         if ai_service.process_call(sid, c['recording_url']): st.rerun()
             else: 
-                st.warning("Nenhuma gravação válida disponível.")
+                st.warning("Nenhuma gravação válida para análise.")
 
     # --- COLUNAS KANBAN ---
     cols = st.columns(len(stages))
@@ -317,7 +327,6 @@ elif page == "CRM (Pipeline)":
                     sla_class = "sla-yellow"; sla_icon = "⚠️"
                 
                 with st.container():
-                    # Card HTML com SLA
                     st.markdown(f"""
                     <div class="{sla_class}" style="background-color:white; border-radius:5px; padding:10px; margin-bottom:10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
                         <small>{deal['contacts'].get('name') or 'Lead'}</small><br>
