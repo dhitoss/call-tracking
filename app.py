@@ -232,7 +232,7 @@ elif page == "CRM (Pipeline)":
     
     # 1. Carregar Dados
     stages = supabase.table('pipeline_stages').select('*').order('position').execute().data
-    deals = supabase.table('deals').select('*, contacts(phone_number, name, lead_score)').eq('status', 'OPEN').order('last_activity_at', desc=True).execute().data
+    deals = supabase.table('deals').select('*, contacts(id, phone_number, name, lead_score)').eq('status', 'OPEN').order('last_activity_at', desc=True).execute().data
     
     # Mapeamentos
     stage_names = [s['name'] for s in stages]
