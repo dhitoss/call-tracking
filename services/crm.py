@@ -61,25 +61,33 @@ class CRMService:
             
         now = datetime.utcnow().isoformat()
         
+        # Busca o ID do estágio padrão (Inbox) para garantir
+        default_stage_id = self._get_default_stage_id()
+
         if existing_deal.data:
             # CENÁRIO: Já tem negócio aberto.
-            # Ação: Traz para o topo (atualiza last_activity_at) e move para Inbox se quiser chamar atenção
             deal_id = existing_deal.data[0]['id']
+            old_stage = existing_deal.data[0]['stage_id']
             
-            # Opcional: Se quiser que SEMPRE volte pro Inbox ao ligar, descomente a linha abaixo:
-            # default_stage = self._get_default_stage_id()
+            # LÓGICA DE RESSURREIÇÃO:
+            # Se o cliente ligou, trazemos ele de volta para o Inbox (default_stage)
+            # para garantir que o time veja a nova interação.
             
-            db.client.table('deals').update({
+            update_data = {
                 'last_activity_at': now,
-                # 'stage_id': default_stage # Força volta pro inicio? (Decisão de negócio)
-            }).eq('id', deal_id).execute()
+                'stage_id': default_stage_id # <--- AQUI: Movemos de volta pro Inbox
+            }
+            
+            db.client.table('deals').update(update_data).eq('id', deal_id).execute()
+            
+            # Registra na timeline o motivo do movimento
+            if old_stage != default_stage_id:
+                self._add_timeline_event(contact_id, deal_id, "SYSTEM", "Card movido para Inbox (Nova interação detectada)", {})
             
             self._add_timeline_event(contact_id, deal_id, "CALL_INBOUND", "Cliente ligou novamente", call_data)
             
         else:
-            # CENÁRIO: Novo negócio (ou retomada de contato antigo fechado)
-            default_stage_id = self._get_default_stage_id()
-            
+            # CENÁRIO: Novo negócio
             new_deal = {
                 'contact_id': contact_id,
                 'stage_id': default_stage_id,
