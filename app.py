@@ -1,8 +1,7 @@
 """
-Call Tracking Dashboard v3.2
-- Refactor: Unificação de Chamadas + Gravações (Call Log Avançado)
-- Feat: Player de Áudio dentro da Tabela
-- Fix: Script DNI e Funcionalidades Admin mantidas
+Call Tracking Dashboard v3.3
+- Feat: Página unificada "Ligações" (Log + Áudio + Tags)
+- Fix: Remoção de páginas duplicadas
 """
 import streamlit as st
 import pandas as pd
@@ -107,9 +106,12 @@ with st.sidebar.expander("➕ Novo Lead Manual"):
             db_service.create_manual_lead(n, p, src, current_org_id, obs); st.success("Ok!"); clear_cache(); st.session_state['pg']="CRM"; time.sleep(0.5); st.rerun()
 
 if 'pg' not in st.session_state: st.session_state['pg'] = "Dashboard"
-menu_opts = ["Dashboard", "CRM", "Histórico de Ligações", "Rotas", "Analytics", "Tracking"]
+
+# MENU ATUALIZADO
+menu_opts = ["Dashboard", "CRM", "Ligações", "Rotas", "Analytics", "Tracking"]
 if user_role == 'super_admin': menu_opts.append("Admin Global")
 page = st.sidebar.radio("Menu", menu_opts, key="pg")
+
 if st.sidebar.button("Atualizar"): clear_cache(); st.rerun()
 
 # ============================================================================
@@ -145,7 +147,6 @@ elif page == "CRM":
                 st.markdown(f"**{dt}** - {e['description']}")
                 if e.get('metadata', {}).get('recording_url'): st.audio(e['metadata']['recording_url'])
         with t2:
-            # Busca a gravação (Query Corrigida Simplificada)
             c_res = supabase.table('calls').select('*').eq('from_number', contact['phone_number']).ilike('recording_url', 'http%').order('created_at', desc=True).limit(1).execute()
             if not c_res.data: c_res = supabase.table('calls').select('*').eq('to_number', contact['phone_number']).ilike('recording_url', 'http%').order('created_at', desc=True).limit(1).execute()
             
@@ -168,13 +169,8 @@ elif page == "CRM":
                     ns = st.selectbox("Mover", s_names, index=s_names.index(s['name']), key=f"mv_{d['id']}", label_visibility="collapsed")
                     if ns != s['name']: db_service.update_deal_stage(d['id'], s_map[ns]); st.toast("Movido"); time.sleep(0.5); st.rerun()
 
-# ============================================================================
-# PÁGINA UNIFICADA: HISTÓRICO DE LIGAÇÕES (Chamadas + Gravações)
-# ============================================================================
-elif page == "Histórico de Ligações":
+elif page == "Ligações":
     st.title("Histórico de Ligações")
-    
-    # Filtros
     c1, c2, c3, c4 = st.columns(4)
     with c1: period = st.selectbox("Período", [1, 7, 30, 60], index=2)
     with c2: status_filter = st.selectbox("Status", ["Todos", "completed", "missed", "busy"])
@@ -183,27 +179,21 @@ elif page == "Histórico de Ligações":
     
     df = get_calls(current_org_id, days=period)
     
-    # Aplica Filtros
     if not df.empty:
         if status_filter != "Todos": df = df[df['status'] == status_filter]
         if search: df = df[df['from_number'].astype(str).str.contains(search) | df['to_number'].astype(str).str.contains(search)]
         if tag_filter: df = df[df['tags'].isin(tag_filter)]
     
     if not df.empty:
-        # KPIs Rápidos
         k1, k2, k3 = st.columns(3)
         k1.metric("Listadas", len(df))
         k2.metric("Gravadas", len(df[df['recording_url'].notna()]))
         k3.metric("Duração Média", format_duration(df['duration'].mean()))
-        
         st.divider()
 
-        # Preparar Tabela Rica
-        # Adicionamos uma coluna 'audio_player' que é a URL
         df['Data'] = df['created_at']
         df['Duração'] = df['duration'].apply(format_duration)
         
-        # Configuração da Tabela (AudioColumn é o segredo)
         edited = st.data_editor(
             df[['Data', 'from_number', 'to_number', 'status', 'Duração', 'recording_url', 'tags', 'call_sid']],
             column_config={
@@ -211,28 +201,20 @@ elif page == "Histórico de Ligações":
                 "tags": st.column_config.SelectboxColumn("Classificação", options=TAG_OPTIONS, width="medium"),
                 "Data": st.column_config.DatetimeColumn("Data", format="DD/MM HH:mm"),
                 "status": st.column_config.TextColumn("Status"),
-                "call_sid": None # Oculto
+                "call_sid": None
             },
-            use_container_width=True,
-            hide_index=True,
-            height=600,
-            key="call_log_editor"
+            use_container_width=True, hide_index=True, height=600, key="call_log_editor"
         )
         
-        # Lógica de Salvamento
         if len(edited) == len(df):
-            orig = df['tags'].fillna("").astype(str)
-            new = edited['tags'].fillna("").astype(str)
+            orig = df['tags'].fillna("").astype(str); new = edited['tags'].fillna("").astype(str)
             if (orig != new).any():
                 for idx in (orig != new).index[orig != new]:
-                    sid = edited.loc[idx]['call_sid']
-                    tag = edited.loc[idx]['tags']
-                    val = tag if tag and tag.strip() else "Limpar"
-                    db_service.update_call_tag(sid, val)
-                    st.toast(f"Atualizado: {val}")
-                clear_cache(); time.sleep(0.5); st.rerun()
+                    sid = edited.loc[idx]['call_sid']; tag = edited.loc[idx]['tags']
+                    db_service.update_call_tag(sid, tag if tag and tag.strip() else "Limpar")
+                st.toast("Salvo!"); clear_cache(); time.sleep(0.5); st.rerun()
     else:
-        st.info("Nenhuma chamada encontrada com os filtros atuais.")
+        st.info("Nenhuma chamada.")
 
 elif page == "Rotas":
     st.title("Rotas")
@@ -258,7 +240,6 @@ elif page == "Tracking":
         base=st.text_input("Site"); src=st.selectbox("Source", ["google","fb"]); num=st.text_input("Tel")
         if st.button("Gerar"): st.code(f"{base}?utm_source={src}&phone={num}")
     with t2:
-        # SCRIPT RESTAURADO
         st.code("""<script>
 function getP(n){return decodeURIComponent((new RegExp('[?|&]'+n+'=([^&;]+?)(&|#|;|$)').exec(location.search)||[,""])[1].replace(/\+/g,'%20'))||null}
 window.onload=function(){
