@@ -1,5 +1,5 @@
 """
-Call Tracking Dashboard v3.0 (Multi-Tenancy)
+Call Tracking Dashboard v2.9 (Fix UUID Error & Missing Attributes)
 """
 import streamlit as st
 import pandas as pd
@@ -11,6 +11,7 @@ import time
 import pytz 
 from urllib.parse import urlencode
 
+# --- IMPORTS DOS SERVIÇOS ---
 from services.database import get_database_service
 from services.ai_service import AIService
 from services.auth import AuthService
@@ -21,7 +22,8 @@ ai_service = AIService()
 auth_service = AuthService()
 analytics_service = AnalyticsService()
 
-st.set_page_config(page_title="Call Tracking", page_icon="🏢", layout="wide")
+# --- CONFIG ---
+st.set_page_config(page_title="Call Tracking CRM", page_icon="🔐", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""<style>.metric-card{background:#f0f2f6;padding:20px;border-radius:10px;border-left:4px solid #1f77b4}.tag-badge{padding:4px 8px;border-radius:4px;color:white;font-weight:bold;font-size:0.85em;display:inline-block}.sla-green{border-left:5px solid #22c55e;padding-left:10px}.sla-yellow{border-left:5px solid #eab308;padding-left:10px}.sla-red{border-left:5px solid #ef4444;padding-left:10px;background:#fff5f5}div[data-testid="stForm"]{border:1px solid #ddd;padding:20px;border-radius:10px;max-width:400px;margin:0 auto}</style>""", unsafe_allow_html=True)
 
 SUPABASE_URL = os.getenv('SUPABASE_URL'); SUPABASE_KEY = os.getenv('SUPABASE_KEY')
@@ -40,16 +42,15 @@ if not auth_service.is_logged_in():
                 else: st.error("Erro.")
     st.stop()
 
-# --- CONTEXTO DA ORGANIZAÇÃO ---
+# --- CONTEXTO & SEGURANÇA UUID ---
 user_role = st.session_state.get('user_role', 'member')
 user_org_id = st.session_state.get('user_org_id')
 current_org_id = user_org_id
 
 st.sidebar.title("Painel de Controle")
 
-# Switcher para Super Admin
 if user_role == 'super_admin':
-    all_orgs = db_service.get_all_organizations()
+    all_orgs = db_service.get_all_organizations() # Agora esta função existe no db!
     if all_orgs:
         org_map = {o['name']: o['id'] for o in all_orgs}
         sel_name = st.sidebar.selectbox("📁 Cliente", list(org_map.keys()))
@@ -58,6 +59,11 @@ if user_role == 'super_admin':
 else:
     st.sidebar.caption(f"Empresa: {st.session_state.get('org_name')}")
 
+# TRAVA DE SEGURANÇA: Se não tiver ID de organização, não carrega nada
+if not current_org_id:
+    st.warning("⚠️ Nenhuma organização vinculada a este usuário. Contate o suporte.")
+    st.stop()
+
 # Configs Globais
 TZ_NAME = os.getenv('DEFAULT_TIMEZONE', 'America/Sao_Paulo')
 try: LOCAL_TZ = pytz.timezone(TZ_NAME)
@@ -65,13 +71,14 @@ except: LOCAL_TZ = pytz.timezone('America/Sao_Paulo')
 TAG_OPTIONS = ["Agendado", "Reagendado", "Cancelado", "Retornar ligação", "Enviar info", "Sem vaga", "Não Agendou", "Ligação errada"]
 TAG_COLORS = {"Agendado": "#28a745", "Reagendado": "#17a2b8", "Cancelado": "#dc3545"}
 
-# Helpers com Filtro de Org
+# Helpers
 def fmt_dt(d): return d.strftime('%d/%m %H:%M') if not pd.isna(d) else ""
 def fmt_dur(s): return f"{int(s//60):02d}:{int(s%60):02d}" if s else "00:00"
 def clear_cache(): st.cache_data.clear()
 
 @st.cache_data(ttl=60)
 def get_calls(org_id, days=30, status=None):
+    if not org_id: return pd.DataFrame() # Proteção extra
     s = datetime.now(timezone.utc) - timedelta(days=days)
     q = supabase.table('calls').select('*').eq('organization_id', org_id).gte('created_at', s.isoformat())
     if status and status!="Todos": q = q.eq('status', status)
@@ -82,6 +89,11 @@ def get_calls(org_id, days=30, status=None):
             if c not in df.columns: df[c] = None
         df['duration'] = df['duration'].fillna(0)
     return df
+
+@st.cache_data(ttl=60)
+def get_routes():
+    if not current_org_id: return []
+    return db_service.get_routes(current_org_id) # Passando org_id corretamente
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -107,7 +119,7 @@ if page == "Dashboard":
     df = get_calls(current_org_id, 30)
     if not df.empty:
         c1,c2,c3,c4 = st.columns(4)
-        c1.metric("Chamadas (30d)", len(df))
+        c1.metric("Chamadas", len(df))
         c2.metric("Atendidas", len(df[df['status']=='completed']))
         c3.metric("Únicos", df['from_number'].nunique())
         c4.metric("Duração", fmt_dur(df['duration'].mean()))
@@ -132,7 +144,8 @@ elif page == "CRM":
                 st.markdown(f"**{dt}** - {e['description']}")
                 if e.get('metadata', {}).get('recording_url'): st.audio(e['metadata']['recording_url'])
         with t2:
-            c_res = supabase.table('calls').select('*').eq('organization_id', current_org_id).eq('from_number', contact['phone_number']).order('created_at', desc=True).limit(1).execute()
+            c_res = supabase.table('calls').select('*').eq('from_number', contact['phone_number']).ilike('recording_url', 'http%').order('created_at', desc=True).limit(1).execute()
+            if not c_res.data: c_res = supabase.table('calls').select('*').eq('to_number', contact['phone_number']).ilike('recording_url', 'http%').order('created_at', desc=True).limit(1).execute()
             if c_res.data:
                 c = c_res.data[0]
                 st.audio(c['recording_url'])
@@ -168,7 +181,6 @@ elif page == "Chamadas":
 
 elif page == "Gravações":
     st.title("Gravações")
-    # Query direta para garantir filtro de org
     start = datetime.now(timezone.utc) - timedelta(days=7)
     res = supabase.table('calls').select('*').eq('organization_id', current_org_id).not_.is_('recording_url', 'null').gte('created_at', start.isoformat()).order('created_at', desc=True).execute()
     if res.data:
@@ -197,6 +209,10 @@ elif page == "Analytics":
 
 elif page == "Tracking":
     st.title("Tracking UTM")
-    perf = db_service.get_marketing_performance(current_org_id)
-    if perf: st.dataframe(pd.DataFrame(perf), use_container_width=True)
-    else: st.info("Sem dados.")
+    t1, t2, t3 = st.tabs(["Link", "Script", "Relatório"])
+    with t1:
+        base=st.text_input("Site"); src=st.selectbox("Src", ["google","fb"]); num=st.text_input("Tel")
+        if st.button("Gerar"): st.code(f"{base}?utm_source={src}&phone={num}")
+    with t3:
+        perf = db_service.get_marketing_performance(current_org_id)
+        if perf: st.dataframe(pd.DataFrame(perf), use_container_width=True)
