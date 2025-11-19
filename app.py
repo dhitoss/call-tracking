@@ -1,8 +1,9 @@
 """
-Call Tracking Dashboard v2.2
-- Fix: Query complexa no Modal (AttributeError)
-- Fix: Timezones (DeprecationWarning)
-- Feat: CRM Interativo e IA
+Call Tracking Dashboard v2.3
+- Fix: Erro de Query no Modal (AttributeError)
+- Fix: Fuso Horário (BRT)
+- Feat: Entrada Manual de Leads
+- Feat: SLA Visual e Botão WhatsApp
 """
 
 import streamlit as st
@@ -64,6 +65,11 @@ st.markdown("""
     .tag-badge { padding: 4px 8px; border-radius: 4px; color: white; font-weight: bold; font-size: 0.85em; display: inline-block; }
     .stTabs [data-baseweb="tab-list"] { gap: 24px; }
     .stTabs [data-baseweb="tab"] { padding: 10px 20px; }
+    
+    /* SLA Badges */
+    .sla-green { border-left: 5px solid #22c55e; padding-left: 10px; }
+    .sla-yellow { border-left: 5px solid #eab308; padding-left: 10px; }
+    .sla-red { border-left: 5px solid #ef4444; padding-left: 10px; background-color: #fff5f5; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -83,15 +89,21 @@ def convert_to_local(df, col_name='created_at'):
     """Converte coluna de data do DataFrame para o fuso local"""
     if df.empty or col_name not in df.columns:
         return df
-    # 1. Converte para datetime UTC (mixed para aceitar com/sem microssegundos)
     df[col_name] = pd.to_datetime(df[col_name], format='mixed', utc=True)
-    # 2. Converte para o fuso local
     df[col_name] = df[col_name].dt.tz_convert(LOCAL_TZ)
     return df
 
 def format_date_br(dt_obj):
     if pd.isna(dt_obj): return ""
     return dt_obj.strftime('%d/%m/%Y %H:%M')
+
+def format_duration(seconds):
+    try:
+        seconds = int(float(seconds or 0))
+        return f"{int(seconds//60):02d}:{int(seconds%60):02d}"
+    except: return "00:00"
+
+def clear_cache(): st.cache_data.clear()
 
 @st.cache_data(ttl=60)
 def get_calls(days=30, status=None, campaign=None):
@@ -110,7 +122,7 @@ def get_calls(days=30, status=None, campaign=None):
             if col not in df.columns: df[col] = None
             if col == 'duration': df[col] = df[col].fillna(0)
         
-        # APLICA CONVERSÃO DE FUSO
+        # Conversão de fuso
         df = convert_to_local(df, 'created_at')
         
     return df
@@ -120,30 +132,47 @@ def get_routes():
     result = supabase.table('phone_routing').select('*').order('created_at', desc=True).execute()
     return result.data if result.data else []
 
-def update_call_tag(call_sid, tag):
-    try:
-        val = tag if tag and tag != "Limpar" else None
-        supabase.table('calls').update({'tags': val, 'updated_at': datetime.utcnow().isoformat()}).eq('call_sid', call_sid).execute()
-        return True
-    except: return False
-
-def format_duration(seconds):
-    try:
-        seconds = int(float(seconds or 0))
-        return f"{int(seconds//60):02d}:{int(seconds%60):02d}"
-    except: return "00:00"
-
-def clear_cache(): st.cache_data.clear()
-
 # ============================================================================
-# SIDEBAR
+# SIDEBAR & NOVO LEAD MANUAL
 # ============================================================================
 
 st.sidebar.title("Call Tracking")
 st.sidebar.markdown(f"🕒 **Fuso:** {TZ_NAME}")
+
+# --- FORMULÁRIO DE NOVO LEAD MANUAL ---
+with st.sidebar.expander("➕ Novo Lead Manual", expanded=False):
+    with st.form("new_lead_form"):
+        nl_name = st.text_input("Nome")
+        nl_phone = st.text_input("Telefone (Ex: +55...)")
+        nl_source = st.selectbox("Origem", ["Balcão/Presencial", "Indicação", "Instagram Direct", "Outro"])
+        nl_note = st.text_area("Observação")
+        
+        if st.form_submit_button("Cadastrar"):
+            if nl_phone and nl_name:
+                if db_service.create_manual_lead(nl_name, nl_phone, nl_source, nl_note):
+                    st.success("Lead criado!")
+                    clear_cache()
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error("Erro ao criar.")
+            else:
+                st.warning("Nome e Telefone obrigatórios.")
+
 st.sidebar.markdown("---")
 
-page = st.sidebar.radio("Navegação", ["Dashboard Geral", "CRM (Pipeline)", "Chamadas", "Gravações", "Gerenciar Rotas", "Analytics Avançado", "Configurações"])
+page = st.sidebar.radio(
+    "Navegação",
+    [
+        "Dashboard Geral",
+        "CRM (Pipeline)",
+        "Chamadas",
+        "Gravações",
+        "Gerenciar Rotas",
+        "Analytics Avançado",
+        "Configurações"
+    ]
+)
 
 if st.sidebar.button("Atualizar Dados", use_container_width=True):
     clear_cache()
@@ -195,23 +224,20 @@ elif page == "CRM (Pipeline)":
     st.title("Pipeline de Atendimento")
     
     stages = supabase.table('pipeline_stages').select('*').order('position').execute().data
-    # Busca deals - Importante: contacts(id, ...) para não dar erro
+    # Importante: selecionar contacts(id, ...)
     deals_raw = supabase.table('deals').select('*, contacts(id, phone_number, name)').eq('status', 'OPEN').order('last_activity_at', desc=True).execute().data
     
-    # Mapeamentos
     stage_map = {s['name']: s['id'] for s in stages}
     stage_names = [s['name'] for s in stages]
     
     # Processamento de Fuso para os Cards
     deals = []
     for d in deals_raw:
-        # Converte a data UTC do banco para o fuso local
         utc_dt = pd.to_datetime(d['last_activity_at']).replace(tzinfo=timezone.utc)
-        local_dt = utc_dt.astimezone(LOCAL_TZ)
-        d['last_activity_local'] = local_dt
+        d['local_dt'] = utc_dt.astimezone(LOCAL_TZ)
         deals.append(d)
 
-    # Modal
+    # --- MODAL DETALHES ---
     @st.dialog("Histórico do Lead", width="large")
     def show_lead_details(deal, contact_id):
         contact = deal['contacts']
@@ -223,7 +249,7 @@ elif page == "CRM (Pipeline)":
             timeline = db_service.get_contact_timeline(contact_id)
             if not timeline: st.info("Vazio.")
             for ev in timeline:
-                icon = "📞" if ev['event_type']=='CALL_INBOUND' else "🏷️"
+                icon = "📞" if 'CALL' in ev['event_type'] else "💬" if 'WHATS' in ev['event_type'] else "📝"
                 ev_dt = pd.to_datetime(ev['created_at']).replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ)
                 
                 with st.chat_message("assistant", avatar=icon):
@@ -235,14 +261,14 @@ elif page == "CRM (Pipeline)":
                         st.markdown(f":background[{c}] :color[white] **{meta['new_tag']}**")
         
         with tab2:
-            # BUSCA SEGURA DE GRAVAÇÃO (Substitui a query complexa que dava erro)
-            # 1. Tenta achar onde o LEAD ligou
+            # --- BUSCA ROBUSTA DE GRAVAÇÃO (CORREÇÃO DO ERRO) ---
+            # 1. Tenta origem
             calls_res = supabase.table('calls').select('*')\
                 .eq('from_number', phone)\
                 .ilike('recording_url', 'http%')\
                 .order('created_at', desc=True).limit(1).execute()
             
-            # 2. Se não achar, tenta onde o LEAD recebeu
+            # 2. Tenta destino (se não achou)
             if not calls_res.data:
                 calls_res = supabase.table('calls').select('*')\
                     .eq('to_number', phone)\
@@ -252,7 +278,6 @@ elif page == "CRM (Pipeline)":
             if calls_res.data:
                 c = calls_res.data[0]
                 sid = c['call_sid']
-                # Converte data para mostrar
                 c_date = pd.to_datetime(c['created_at']).replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ)
                 
                 st.info(f"Chamada de: {c_date.strftime('%d/%m %H:%M')}")
@@ -269,9 +294,9 @@ elif page == "CRM (Pipeline)":
                     with st.spinner("Analisando..."):
                         if ai_service.process_call(sid, c['recording_url']): st.rerun()
             else: 
-                st.warning("Nenhuma gravação válida encontrada para este lead.")
+                st.warning("Nenhuma gravação válida disponível.")
 
-    # Colunas Kanban
+    # --- COLUNAS KANBAN ---
     cols = st.columns(len(stages))
     for i, stage in enumerate(stages):
         with cols[i]:
@@ -279,28 +304,49 @@ elif page == "CRM (Pipeline)":
             st.markdown(f"<div style='border-top:3px solid {stage.get('color','#ccc')};padding:5px;'><b>{stage['name']}</b> ({len(s_deals)})</div>", unsafe_allow_html=True)
             
             for deal in s_deals:
-                with st.container(border=True):
-                    st.markdown(f"**{deal['contacts']['phone_number']}**")
+                # SLA CALC
+                now_utc = datetime.now(timezone.utc)
+                last_act_utc = pd.to_datetime(deal['last_activity_at']).replace(tzinfo=timezone.utc)
+                minutes_diff = (now_utc - last_act_utc).total_seconds() / 60
+                
+                sla_class = "sla-green"
+                sla_icon = "🔥"
+                if minutes_diff > 120: # 2h
+                    sla_class = "sla-red"; sla_icon = "🚨"
+                elif minutes_diff > 30: # 30m
+                    sla_class = "sla-yellow"; sla_icon = "⚠️"
+                
+                with st.container():
+                    # Card HTML com SLA
+                    st.markdown(f"""
+                    <div class="{sla_class}" style="background-color:white; border-radius:5px; padding:10px; margin-bottom:10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                        <small>{deal['contacts'].get('name') or 'Lead'}</small><br>
+                        <strong>{deal['contacts']['phone_number']}</strong><br>
+                        <small>{sla_icon} Há {int(minutes_diff)} min</small>
+                    </div>
+                    """, unsafe_allow_html=True)
                     
-                    # Exibe hora local
-                    dt_local = deal['last_activity_local']
-                    # Comparação segura com timezone
-                    is_recent = (datetime.now(timezone.utc) - pd.to_datetime(deal['last_activity_at']).replace(tzinfo=timezone.utc)).total_seconds() < 3600
-                    icon = "🔥" if is_recent else "🕒"
-                    st.caption(f"{icon} {dt_local.strftime('%d/%m %H:%M')}")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        # Botão WhatsApp
+                        phone_clean = deal['contacts']['phone_number'].replace('+','').replace('-','')
+                        wa_link = f"https://wa.me/{phone_clean}"
+                        if st.button("💬 Zap", key=f"w_{deal['id']}", use_container_width=True):
+                            db_service.log_interaction(deal['id'], deal['contacts']['id'], "OUTBOUND_WHATSAPP", "Abriu WhatsApp")
+                            st.link_button("🔗 Abrir", wa_link)
+                            time.sleep(0.5); st.rerun()
+                    with c2:
+                        if st.button("📂 Ver", key=f"o_{deal['id']}", use_container_width=True):
+                            show_lead_details(deal, deal['contacts']['id'])
                     
-                    # Ações
+                    # Mover
                     curr = stage['name']
-                    idx = stage_names.index(curr) if curr in stage_names else 0
-                    new_s = st.selectbox("Fase", stage_names, index=idx, key=f"s_{deal['id']}", label_visibility="collapsed")
-                    
+                    try: idx = stage_names.index(curr)
+                    except: idx = 0
+                    new_s = st.selectbox("Mover", stage_names, index=idx, key=f"m_{deal['id']}", label_visibility="collapsed")
                     if new_s != curr:
                         db_service.update_deal_stage(deal['id'], stage_map[new_s])
-                        st.toast("Movido!")
-                        time.sleep(0.5); st.rerun()
-                    
-                    if st.button("Abrir", key=f"b_{deal['id']}", use_container_width=True):
-                        show_lead_details(deal, deal['contacts']['id'])
+                        st.toast("Movido!"); time.sleep(0.5); st.rerun()
 
 # ============================================================================
 # PÁGINA: CHAMADAS (TABELA)
@@ -318,7 +364,6 @@ elif page == "Chamadas":
         df = df[df['from_number'].astype(str).str.contains(search)]
     
     if not df.empty:
-        # Preparar dados já convertidos para local
         df['Data'] = df['created_at'].apply(format_date_br)
         df['Duração'] = df['duration'].apply(format_duration)
         

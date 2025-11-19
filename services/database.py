@@ -139,6 +139,81 @@ class DatabaseService:
             return True
         except: return False
 
+
+    # ========================================================================
+    # 4. GESTÃO MANUAL & INTERAÇÕES
+    # ========================================================================
+
+    def create_manual_lead(self, name: str, phone: str, source: str, note: str = None) -> bool:
+        """Cria um lead manualmente (Balcão, Indicação, etc)."""
+        try:
+            now = datetime.utcnow().isoformat()
+            
+            # 1. Cria/Busca Contato
+            # Tenta inserir, se der conflito no telefone, pega o existente
+            contact_res = self.client.table('contacts').select('id').eq('phone_number', phone).execute()
+            
+            if contact_res.data:
+                contact_id = contact_res.data[0]['id']
+                # Atualiza nome se estava vazio
+                self.client.table('contacts').update({'name': name}).eq('id', contact_id).execute()
+            else:
+                new_contact = {'phone_number': phone, 'name': name, 'created_at': now}
+                res = self.client.table('contacts').insert(new_contact).execute()
+                contact_id = res.data[0]['id']
+
+            # 2. Pega estágio padrão (Inbox)
+            stage_res = self.client.table('pipeline_stages').select('id').eq('is_default', True).limit(1).execute()
+            stage_id = stage_res.data[0]['id'] if stage_res.data else None
+
+            # 3. Cria Deal
+            deal_data = {
+                'contact_id': contact_id,
+                'stage_id': stage_id,
+                'title': f"Lead Manual: {name}",
+                'status': 'OPEN',
+                'source': source,
+                'last_activity_at': now
+            }
+            deal_res = self.client.table('deals').insert(deal_data).execute()
+            deal_id = deal_res.data[0]['id']
+
+            # 4. Registra na Timeline
+            self.client.table('timeline_events').insert({
+                'contact_id': contact_id,
+                'deal_id': deal_id,
+                'event_type': 'MANUAL_ENTRY',
+                'description': f"Lead criado manualmente ({source}). Nota: {note or 'Sem nota'}",
+                'created_at': now
+            }).execute()
+            
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error creating manual lead: {e}")
+            return False
+
+    def log_interaction(self, deal_id: str, contact_id: str, type: str, description: str):
+        """Registra uma interação (ex: WhatsApp) e reseta o SLA."""
+        try:
+            now = datetime.utcnow().isoformat()
+            
+            # 1. Registra na timeline
+            self.client.table('timeline_events').insert({
+                'contact_id': contact_id,
+                'deal_id': deal_id,
+                'event_type': type,
+                'description': description,
+                'created_at': now
+            }).execute()
+            
+            # 2. Atualiza o Deal (Reseta SLA trazendo para o topo)
+            self.client.table('deals').update({'last_activity_at': now}).eq('id', deal_id).execute()
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error logging interaction: {e}")
+            return False
+
+
 @lru_cache()
 def get_database_service() -> DatabaseService:
     return DatabaseService()
