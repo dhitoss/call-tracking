@@ -1,7 +1,7 @@
 """
-Call Tracking Dashboard v2.5 (MVP Pilot)
-- Feat: Sistema de Login (Gatekeeper)
-- Core: CRM, IA, Telefonia
+Call Tracking Dashboard v2.7
+- Fix: Menu Lateral (Analytics e Tracking aparecendo corretamente)
+- Core: CRM, IA, Telefonia, Analytics
 """
 
 import streamlit as st
@@ -24,7 +24,6 @@ db_service = get_database_service()
 ai_service = AIService()
 auth_service = AuthService()
 analytics_service = AnalyticsService()
-
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -49,18 +48,18 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Supabase (para queries diretas se necessário)
+# Supabase
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 if not SUPABASE_URL: st.stop()
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ============================================================================
-# 🔐 LÓGICA DE LOGIN (GATEKEEPER)
+# 🔐 LÓGICA DE LOGIN
 # ============================================================================
 
 if not auth_service.is_logged_in():
-    col1, col2, col3 = st.columns([1,2,1])
+    col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.markdown("<br><br>", unsafe_allow_html=True)
         st.markdown("<h1 style='text-align: center;'>🔐 Acesso Restrito</h1>", unsafe_allow_html=True)
@@ -75,18 +74,18 @@ if not auth_service.is_logged_in():
                 user = auth_service.login(email, password)
                 if user:
                     st.session_state['user'] = user
-                    st.toast("Login realizado com sucesso!")
+                    st.toast("Login realizado!")
                     time.sleep(0.5)
                     st.rerun()
                 else:
                     st.error("Credenciais inválidas.")
-    st.stop() # 🛑 PARA AQUI SE NÃO TIVER LOGADO
+    st.stop()
 
 # ============================================================================
-# 🚀 APLICAÇÃO PRINCIPAL (AREA LOGADA)
+# 🚀 APLICAÇÃO PRINCIPAL
 # ============================================================================
 
-# --- CONFIGURAÇÃO DE FUSO HORÁRIO ---
+# Configurações Globais
 TZ_NAME = os.getenv('DEFAULT_TIMEZONE', 'America/Sao_Paulo')
 try: LOCAL_TZ = pytz.timezone(TZ_NAME)
 except: LOCAL_TZ = pytz.timezone('America/Sao_Paulo')
@@ -94,7 +93,7 @@ except: LOCAL_TZ = pytz.timezone('America/Sao_Paulo')
 TAG_OPTIONS = ["Agendado", "Reagendado", "Cancelado", "Retornar ligação", "Enviar info", "Sem vaga", "Não Agendou", "Ligação errada"]
 TAG_COLORS = {"Agendado": "#28a745", "Reagendado": "#17a2b8", "Cancelado": "#dc3545", "Retornar ligação": "#ffc107", "Enviar info": "#6c757d", "Sem vaga": "#343a40", "Não Agendou": "#fd7e14", "Ligação errada": "#000000"}
 
-# --- FUNÇÕES AUXILIARES ---
+# Helpers
 def convert_to_local(df, col='created_at'):
     if df.empty or col not in df.columns: return df
     df[col] = pd.to_datetime(df[col], format='mixed', utc=True).dt.tz_convert(LOCAL_TZ)
@@ -134,7 +133,6 @@ def update_call_tag(call_sid, tag):
 # --- SIDEBAR ---
 st.sidebar.title("Call Tracking")
 
-# User Info
 with st.sidebar:
     user_email = st.session_state['user'].email
     st.caption(f"👤 **{user_email}**")
@@ -144,7 +142,7 @@ with st.sidebar:
 
 st.sidebar.markdown("---")
 
-# Novo Lead Manual
+# Novo Lead
 with st.sidebar.expander("➕ Novo Lead Manual", expanded=False):
     with st.form("new_lead_form", clear_on_submit=True):
         nl_name = st.text_input("Nome")
@@ -159,14 +157,23 @@ with st.sidebar.expander("➕ Novo Lead Manual", expanded=False):
 
 if 'nav_page' not in st.session_state: st.session_state['nav_page'] = "Dashboard Geral"
 
-page = st.sidebar.radio("Menu", ["Dashboard Geral", "CRM (Pipeline)", "Chamadas", "Gravações", "Gerenciar Rotas", "Configurações"], key="nav_page")
+# MENU PRINCIPAL (Corrigido para incluir todas as opções)
+page = st.sidebar.radio("Menu", [
+    "Dashboard Geral", 
+    "CRM (Pipeline)", 
+    "Chamadas", 
+    "Gravações", 
+    "Gerenciar Rotas", 
+    "Analytics Avançado", 
+    "Tracking UTM", 
+    "Configurações"
+], key="nav_page")
 
-if st.sidebar.button("Atualizar", use_container_width=True): clear_cache(); st.rerun()
+if st.sidebar.button("Atualizar Dados", use_container_width=True): clear_cache(); st.rerun()
 
 # ============================================================================
-# PÁGINAS (Conteúdo Protegido)
+# PÁGINA 1: DASHBOARD GERAL
 # ============================================================================
-
 if page == "Dashboard Geral":
     st.title("Dashboard Geral")
     col1, col2 = st.columns(2)
@@ -182,12 +189,16 @@ if page == "Dashboard Geral":
         st.plotly_chart(px.area(daily, x='created_at', y='calls', title="Volume"), use_container_width=True)
     else: st.info("Sem dados.")
 
+# ============================================================================
+# PÁGINA 2: CRM
+# ============================================================================
 elif page == "CRM (Pipeline)":
     st.title("Pipeline de Atendimento")
     stages = supabase.table('pipeline_stages').select('*').order('position').execute().data
     deals_raw = supabase.table('deals').select('*, contacts(id, phone_number, name)').eq('status', 'OPEN').order('last_activity_at', desc=True).execute().data
     stage_map = {s['name']: s['id'] for s in stages}
     stage_names = [s['name'] for s in stages]
+    
     deals = []
     for d in deals_raw:
         utc = pd.to_datetime(d['last_activity_at']).replace(tzinfo=timezone.utc)
@@ -247,6 +258,9 @@ elif page == "CRM (Pipeline)":
                     if ns != cur:
                         db_service.update_deal_stage(deal['id'], stage_map[ns]); st.toast("Movido!"); time.sleep(0.5); st.rerun()
 
+# ============================================================================
+# PÁGINA 3: CHAMADAS
+# ============================================================================
 elif page == "Chamadas":
     st.title("Histórico")
     df = get_calls(days=30)
@@ -264,6 +278,9 @@ elif page == "Chamadas":
                     update_call_tag(r['call_sid'], t)
                 clear_cache(); time.sleep(0.5); st.rerun()
 
+# ============================================================================
+# PÁGINA 4: GRAVAÇÕES
+# ============================================================================
 elif page == "Gravações":
     st.title("Gravações")
     start = datetime.now(timezone.utc) - timedelta(days=7)
@@ -288,119 +305,8 @@ elif page == "Gravações":
                         st.toast("Salvo!"); time.sleep(0.5); clear_cache(); st.rerun()
 
 # ============================================================================
-# PÁGINA: ANALYTICS AVANÇADO (DASHBOARD EXECUTIVO)
+# PÁGINA 5: ROTAS
 # ============================================================================
-
-elif page == "Analytics Avançado":
-    st.title("📈 Dashboard de Performance")
-    st.caption("Visão estratégica de conversão e eficiência da equipe.")
-    
-    # Filtro Global
-    col1, col2 = st.columns([1, 3])
-    with col1:
-        days = st.selectbox("Período de Análise", [7, 15, 30, 60, 90], index=2)
-    
-    # --- CARREGAMENTO DE DADOS ---
-    kpis = analytics_service.get_kpis(days=days)
-    
-    # 1. LINHA DE KPIS (TOPO)
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Leads Totais", kpis['total_leads'], help="Cards criados no CRM")
-    c2.metric("Agendamentos", kpis['total_agendados'], help="Leads na fase Agendado")
-    
-    delta_color = "normal"
-    if kpis['conversion_rate'] > 20: delta_color = "normal" # Verde implícito se positivo
-    elif kpis['conversion_rate'] < 5: delta_color = "inverse"
-    
-    c3.metric("Taxa Conversão", f"{kpis['conversion_rate']:.1f}%", delta="Global", delta_color="off")
-    c4.metric("Chamadas Brutas", kpis['total_calls'], help="Ligações recebidas no total")
-    
-    st.markdown("---")
-    
-    # 2. FUNIL DE VENDAS + SLA (MEIO)
-    col_left, col_right = st.columns([2, 1])
-    
-    with col_left:
-        st.subheader("Funil de Conversão")
-        funnel_df = analytics_service.get_funnel_data(days=days)
-        
-        if not funnel_df.empty:
-            fig_funnel = px.funnel(
-                funnel_df, 
-                x='count', 
-                y='stage_name', 
-                color='stage_name',
-                title=None
-            )
-            st.plotly_chart(fig_funnel, use_container_width=True)
-        else:
-            st.info("Sem dados suficientes para o funil.")
-            
-    with col_right:
-        st.subheader("Saúde do Inbox (SLA)")
-        sla = analytics_service.get_sla_metrics()
-        
-        # Gráfico de Rosca para SLA
-        sla_data = pd.DataFrame([
-            {"Status": "No Prazo (<30min)", "Qtd": sla['ok'], "Color": "#22c55e"},
-            {"Status": "Atenção (30min-2h)", "Qtd": sla['warning'], "Color": "#eab308"},
-            {"Status": "Crítico (>2h)", "Qtd": sla['critical'], "Color": "#ef4444"}
-        ])
-        # Filtra zeros para não ficar feio
-        sla_data = sla_data[sla_data['Qtd'] > 0]
-        
-        if not sla_data.empty:
-            fig_sla = px.pie(
-                sla_data, 
-                values='Qtd', 
-                names='Status', 
-                color='Status',
-                color_discrete_map={"No Prazo (<30min)":"#22c55e", "Atenção (30min-2h)":"#eab308", "Crítico (>2h)":"#ef4444"},
-                hole=0.5
-            )
-            fig_sla.update_layout(showlegend=True, legend=dict(orientation="h"))
-            st.plotly_chart(fig_sla, use_container_width=True)
-            
-            total_backlog = sla['ok'] + sla['warning'] + sla['critical']
-            st.caption(f"Total de {total_backlog} leads aguardando no Inbox.")
-        else:
-            st.success("🎉 Inbox Zerado! Nenhum lead aguardando.")
-
-    # 3. ORIGEM E TENDÊNCIAS (BASE)
-    c1, c2 = st.columns(2)
-    
-    with c1:
-        st.subheader("Origem dos Leads")
-        source_df = analytics_service.get_leads_by_source(days=days)
-        if not source_df.empty:
-            # Traduzir termos técnicos
-            source_map = {'voice': 'Telefone', 'manual': 'Balcão/Manual', 'whatsapp': 'WhatsApp'}
-            source_df['source'] = source_df['source'].map(lambda x: source_map.get(x, x))
-            
-            fig_source = px.pie(source_df, names='source', hole=0.0)
-            st.plotly_chart(fig_source, use_container_width=True)
-        else:
-            st.info("Sem dados de origem.")
-            
-    with c2:
-        st.subheader("Volume de Leads por Dia")
-        # Reutiliza a função get_calls para o gráfico de linha, mas focado em leads
-        # Para simplificar o MVP, usaremos get_calls, mas o ideal seria query na tabela deals
-        # Vamos fazer uma query rápida aqui
-        start_iso = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-        deals_hist = db_service.client.table('deals').select('created_at').gte('created_at', start_iso).execute()
-        
-        if deals_hist.data:
-            df_hist = pd.DataFrame(deals_hist.data)
-            df_hist['created_at'] = pd.to_datetime(df_hist['created_at']).dt.date
-            daily_leads = df_hist.groupby('created_at').size().reset_index(name='leads')
-            
-            fig_line = px.bar(daily_leads, x='created_at', y='leads')
-            st.plotly_chart(fig_line, use_container_width=True)
-        else:
-            st.info("Sem histórico recente.")
-
-
 elif page == "Gerenciar Rotas":
     st.title("Rotas")
     with st.form("nr"):
@@ -410,6 +316,45 @@ elif page == "Gerenciar Rotas":
     r = get_routes()
     if r: st.dataframe(r)
 
+# ============================================================================
+# PÁGINA 6: ANALYTICS AVANÇADO (DASHBOARD EXECUTIVO)
+# ============================================================================
+elif page == "Analytics Avançado":
+    st.title("📈 Dashboard de Performance")
+    col1, col2 = st.columns([1, 3])
+    with col1: days = st.selectbox("Período", [7, 15, 30, 60], index=2)
+    
+    kpis = analytics_service.get_kpis(days=days)
+    
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Leads", kpis['total_leads'])
+    c2.metric("Agendados", kpis['total_agendados'])
+    c3.metric("Conversão", f"{kpis['conversion_rate']:.1f}%")
+    c4.metric("Chamadas", kpis['total_calls'])
+    
+    st.markdown("---")
+    
+    cl, cr = st.columns([2, 1])
+    with cl:
+        st.subheader("Funil")
+        funnel_df = analytics_service.get_funnel_data(days=days)
+        if not funnel_df.empty:
+            st.plotly_chart(px.funnel(funnel_df, x='count', y='stage_name', color='stage_name'), use_container_width=True)
+        else: st.info("Sem dados.")
+    
+    with cr:
+        st.subheader("SLA (Inbox)")
+        sla = analytics_service.get_sla_metrics()
+        sla_data = pd.DataFrame([{"S": "OK", "Q": sla['ok']}, {"S": "Atenção", "Q": sla['warning']}, {"S": "Crítico", "Q": sla['critical']}])
+        st.plotly_chart(px.pie(sla_data, values='Q', names='S', hole=0.5), use_container_width=True)
+
+# ============================================================================
+# PÁGINAS EXTRAS
+# ============================================================================
+elif page == "Tracking UTM":
+    st.title("Tracking UTM")
+    st.info("Em breve: Relatórios de origem de tráfego.")
+
 elif page == "Configurações":
     st.title("Configuração")
-    st.info(f"Ambiente: {os.getenv('RAILWAY_ENVIRONMENT_NAME','Production')}")
+    st.info(f"Ambiente: {os.getenv('RAILWAY_ENVIRONMENT_NAME','Production')} | Fuso: {TZ_NAME}")
