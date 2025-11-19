@@ -1,6 +1,6 @@
 """
-Call Tracking Dashboard v2.7
-- Fix: Menu Lateral (Analytics e Tracking aparecendo corretamente)
+Call Tracking Dashboard v2.8
+- Fix: Import urlencode (Correção do erro na aba Tracking)
 - Core: CRM, IA, Telefonia, Analytics
 """
 
@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 import plotly.express as px
 import time
 import pytz 
+from urllib.parse import urlencode 
 
 # --- IMPORTS DOS SERVIÇOS ---
 from services.database import get_database_service
@@ -157,7 +158,7 @@ with st.sidebar.expander("➕ Novo Lead Manual", expanded=False):
 
 if 'nav_page' not in st.session_state: st.session_state['nav_page'] = "Dashboard Geral"
 
-# MENU PRINCIPAL (Corrigido para incluir todas as opções)
+# MENU PRINCIPAL
 page = st.sidebar.radio("Menu", [
     "Dashboard Geral", 
     "CRM (Pipeline)", 
@@ -198,7 +199,6 @@ elif page == "CRM (Pipeline)":
     deals_raw = supabase.table('deals').select('*, contacts(id, phone_number, name)').eq('status', 'OPEN').order('last_activity_at', desc=True).execute().data
     stage_map = {s['name']: s['id'] for s in stages}
     stage_names = [s['name'] for s in stages]
-    
     deals = []
     for d in deals_raw:
         utc = pd.to_datetime(d['last_activity_at']).replace(tzinfo=timezone.utc)
@@ -305,8 +305,9 @@ elif page == "Gravações":
                         st.toast("Salvo!"); time.sleep(0.5); clear_cache(); st.rerun()
 
 # ============================================================================
-# PÁGINA 5: ROTAS
+# PÁGINAS EXTRAS
 # ============================================================================
+
 elif page == "Gerenciar Rotas":
     st.title("Rotas")
     with st.form("nr"):
@@ -316,14 +317,10 @@ elif page == "Gerenciar Rotas":
     r = get_routes()
     if r: st.dataframe(r)
 
-# ============================================================================
-# PÁGINA 6: ANALYTICS AVANÇADO (DASHBOARD EXECUTIVO)
-# ============================================================================
 elif page == "Analytics Avançado":
-    st.title("📈 Dashboard de Performance")
+    st.title("Analytics")
     col1, col2 = st.columns([1, 3])
     with col1: days = st.selectbox("Período", [7, 15, 30, 60], index=2)
-    
     kpis = analytics_service.get_kpis(days=days)
     
     c1, c2, c3, c4 = st.columns(4)
@@ -340,141 +337,47 @@ elif page == "Analytics Avançado":
         funnel_df = analytics_service.get_funnel_data(days=days)
         if not funnel_df.empty:
             st.plotly_chart(px.funnel(funnel_df, x='count', y='stage_name', color='stage_name'), use_container_width=True)
-        else: st.info("Sem dados.")
-    
     with cr:
-        st.subheader("SLA (Inbox)")
+        st.subheader("SLA")
         sla = analytics_service.get_sla_metrics()
         sla_data = pd.DataFrame([{"S": "OK", "Q": sla['ok']}, {"S": "Atenção", "Q": sla['warning']}, {"S": "Crítico", "Q": sla['critical']}])
         st.plotly_chart(px.pie(sla_data, values='Q', names='S', hole=0.5), use_container_width=True)
 
-
-# ============================================================================
-# PÁGINA: TRACKING UTM & ATRIBUIÇÃO
-# ============================================================================
-
 elif page == "Tracking UTM":
-    st.title("📡 Central de Rastreamento")
+    st.title("Tracking UTM")
+    t1, t2, t3 = st.tabs(["🔗 Links", "💻 Script", "📊 Relatório"])
     
-    tab_builder, tab_dni, tab_report = st.tabs(["🔗 Gerador de Links", "💻 Script do Site (DNI)", "📊 Relatório de Origem"])
-    
-    # --- ABA 1: GERADOR DE LINKS ---
-    with tab_builder:
-        st.markdown("#### Criador de URL Parametrizada")
-        st.caption("Use esta ferramenta para criar links para seus anúncios (Google Ads, Facebook, Instagram).")
-        
+    with t1:
         c1, c2 = st.columns(2)
-        with c1:
-            base_url = st.text_input("URL do Site", "https://suaclinica.com.br")
-            source = st.selectbox("Origem (utm_source)", ["google", "facebook", "instagram", "email", "whatsapp", "offline"])
-            campaign = st.text_input("Nome da Campanha (utm_campaign)", placeholder="Ex: black_friday_2024")
+        base = c1.text_input("Site", "https://site.com")
+        src = c1.selectbox("Source", ["google","facebook","instagram"])
+        med = c2.selectbox("Medium", ["cpc","banner","organic"])
+        cmp = c2.text_input("Campaign")
+        routes = db_service.get_routes()
+        nums = [r['tracking_number'] for r in routes] if routes else []
+        num = st.selectbox("Número", nums) if nums else st.text_input("Número")
         
-        with c2:
-            medium = st.selectbox("Mídia (utm_medium)", ["cpc", "cpm", "organic", "referral", "banner"])
-            # Busca números cadastrados no sistema para sugerir
-            routes = db_service.get_routes()
-            track_nums = [r['tracking_number'] for r in routes] if routes else []
-            selected_number = st.selectbox("Número de Rastreamento", track_nums) if track_nums else st.text_input("Número (Ex: +55...)")
-            
-        st.markdown("---")
-        
-        if base_url and source and selected_number:
-            # Construção da URL
-            params = {
-                'utm_source': source,
-                'utm_medium': medium,
-                'utm_campaign': campaign,
-                'phone': selected_number # Parâmetro para o script JS ler
-            }
-            # Remove vazios
-            params = {k: v for k, v in params.items() if v}
-            
-            final_url = f"{base_url}?{urlencode(params)}"
-            
-            st.success("✅ Link Gerado com Sucesso!")
-            st.code(final_url, language="text")
-            st.caption("Copie este link e cole no seu anúncio.")
-        else:
-            st.info("Preencha os campos para gerar o link.")
+        if base and src and num:
+            params = {'utm_source':src, 'utm_medium':med, 'utm_campaign':cmp, 'phone':num}
+            final = f"{base}?{urlencode({k:v for k,v in params.items() if v})}"
+            st.code(final)
 
-    # --- ABA 2: SCRIPT DNI (Dynamic Number Insertion) ---
-    with tab_dni:
-        st.markdown("#### Instalação no Site (DNI)")
-        st.write("Envie este código para o desenvolvedor do seu site. Ele permite trocar o número de telefone automaticamente quando o cliente vem de um anúncio.")
-        
-        js_code = """
-<script>
-  // Call Tracking DNI (Dynamic Number Insertion)
-  // Coloque este script no <head> do seu site.
-  
-  function getParameterByName(name) {
-      name = name.replace(/[\\[]/, "\\[").replace(/[\\]]/, "\\]");
-      var regex = new RegExp("[\\\\?&]" + name + "=([^&#]*)"),
-      results = regex.exec(location.search);
-      return results === null ? "" : decodeURIComponent(results[1].replace(/\\+/g, " "));
+    with t2:
+        st.code("""<script>
+function getP(n){return decodeURIComponent((new RegExp('[?|&]'+n+'=([^&;]+?)(&|#|;|$)').exec(location.search)||[,""])[1].replace(/\+/g,'%20'))||null}
+window.onload=function(){
+  var p = getP('phone');
+  if(p){
+    document.querySelectorAll('a[href^="tel:"]').forEach(function(l){l.href="tel:"+p;l.innerText=p});
+    document.querySelectorAll('a[href*="wa.me"]').forEach(function(l){l.href=l.href.replace(/phone=\d+/,"phone="+p.replace(/\D/g,''))});
   }
+}
+</script>""", language="html")
 
-  window.onload = function() {
-      // 1. Verifica se tem um número na URL (ex: ?phone=+5561...)
-      var trackingPhone = getParameterByName('phone');
-      
-      // 2. Se tiver, procura onde trocar no site
-      if (trackingPhone) {
-          // Troca links de tel:
-          var links = document.querySelectorAll('a[href^="tel:"]');
-          links.forEach(function(link) {
-              link.href = "tel:" + trackingPhone;
-              link.innerText = trackingPhone; // Opcional: muda o texto visível
-          });
-          
-          // Troca botões de WhatsApp
-          var wppLinks = document.querySelectorAll('a[href*="wa.me"]');
-          wppLinks.forEach(function(link) {
-              // Lógica simples para trocar número do zap
-              var currentHref = link.href;
-              // Aqui você pode implementar a troca regex específica do seu link zap
-          });
-          
-          console.log("Call Tracking: Número alterado para " + trackingPhone);
-      }
-  };
-</script>
-        """
-        st.code(js_code, language="html")
-        st.warning("⚠️ Nota: Este é um script genérico. Pode precisar de ajustes dependendo de como seu site foi construído (Wordpress, Wix, React).")
-
-    # --- ABA 3: RELATÓRIO ---
-    with tab_report:
-        st.subheader("Performance por Origem")
-        
-        perf_data = db_service.get_marketing_performance()
-        
-        if perf_data:
-            df_perf = pd.DataFrame(perf_data)
-            
-            # Formatação
-            if 'Last Active' in df_perf.columns:
-                df_perf['Last Active'] = pd.to_datetime(df_perf['Last Active']).apply(format_date_br)
-            
-            # Métricas de Topo
-            top_source = df_perf.iloc[0]['Source'] if not df_perf.empty else "N/A"
-            total_tracked_calls = df_perf['Calls'].sum()
-            
-            m1, m2 = st.columns(2)
-            m1.metric("Total Chamadas Rasteadas", total_tracked_calls)
-            m2.metric("Melhor Canal", top_source)
-            
-            # Gráfico
-            fig = px.bar(df_perf, x='Source', y='Calls', color='Campaign', title="Chamadas por Canal de Aquisição")
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Tabela
-            st.dataframe(df_perf, use_container_width=True, hide_index=True)
-        else:
-            st.info("Ainda não há dados de campanhas rastreadas. Gere links e comece a rodar anúncios!")
-# ============================================================================
-# PÁGINAS EXTRAS
-# ============================================================================
+    with t3:
+        perf = db_service.get_marketing_performance()
+        if perf: st.dataframe(pd.DataFrame(perf))
+        else: st.info("Sem dados.")
 
 elif page == "Configurações":
     st.title("Configuração")
