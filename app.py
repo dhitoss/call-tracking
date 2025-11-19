@@ -398,7 +398,14 @@ elif page == "CRM (Beta)":
                     st.markdown(f"**{phone}**")
                     
                     # Info de Tempo
-                    last_activity = pd.to_datetime(deal['last_activity_at'])
+                    # 1. Converte string para data (usando mixed para evitar erro de formato)
+                    last_activity = pd.to_datetime(deal['last_activity_at'], format='mixed')
+                    
+                    # 2. Remove informação de fuso horário (torna naive) para comparar com datetime.utcnow
+                    if last_activity.tzinfo is not None:
+                        last_activity = last_activity.tz_localize(None)
+                    
+                    # 3. Agora a subtração funciona
                     is_recent = (datetime.utcnow() - last_activity).total_seconds() < 3600 # 1 hora
                     
                     time_str = last_activity.strftime('%H:%M %d/%m')
