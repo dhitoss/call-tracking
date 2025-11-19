@@ -1,7 +1,8 @@
 """
-Call Tracking Dashboard v3.4
-- Feat: Página 'Ligações' unificada
-- Fix: Nomes de Menu e Funções
+Call Tracking Dashboard v3.5
+- Fix: Remoção de AudioColumn (incompatível) -> Volta para Layout de Lista Expansível
+- Fix: SyntaxWarning no Regex do JavaScript
+- Core: Sistema unificado de Ligações
 """
 import streamlit as st
 import pandas as pd
@@ -13,6 +14,7 @@ import time
 import pytz 
 from urllib.parse import urlencode
 
+# --- IMPORTS ---
 from services.database import get_database_service
 from services.ai_service import AIService
 from services.auth import AuthService
@@ -23,6 +25,7 @@ ai_service = AIService()
 auth_service = AuthService()
 analytics_service = AnalyticsService()
 
+# --- CONFIG ---
 st.set_page_config(page_title="Call Tracking", page_icon="📞", layout="wide")
 st.markdown("""<style>.metric-card{background:#f0f2f6;padding:20px;border-radius:10px;border-left:4px solid #1f77b4}.sla-green{border-left:5px solid #22c55e;padding-left:10px}.sla-yellow{border-left:5px solid #eab308;padding-left:10px}.sla-red{border-left:5px solid #ef4444;padding-left:10px;background:#fff5f5}div[data-testid="stForm"]{border:1px solid #ddd;padding:20px;border-radius:10px;max-width:400px;margin:0 auto}</style>""", unsafe_allow_html=True)
 
@@ -48,12 +51,12 @@ user_org_id = st.session_state.get('user_org_id')
 current_org_id = user_org_id
 
 # Sidebar Admin
-st.sidebar.title("Painel")
+st.sidebar.title("Painel de Controle")
 if user_role == 'super_admin':
     all_orgs = db_service.get_all_organizations()
     if all_orgs:
         org_map = {o['name']: o['id'] for o in all_orgs}
-        sel_name = st.sidebar.selectbox("📁 Cliente", list(org_map.keys()))
+        sel_name = st.sidebar.selectbox("📁 Cliente / Visão", list(org_map.keys()))
         current_org_id = org_map[sel_name]
         st.sidebar.markdown("---")
 else:
@@ -66,6 +69,7 @@ TZ_NAME = os.getenv('DEFAULT_TIMEZONE', 'America/Sao_Paulo')
 try: LOCAL_TZ = pytz.timezone(TZ_NAME)
 except: LOCAL_TZ = pytz.timezone('America/Sao_Paulo')
 TAG_OPTIONS = ["Agendado", "Reagendado", "Cancelado", "Retornar ligação", "Enviar info", "Sem vaga", "Não Agendou", "Ligação errada"]
+TAG_COLORS = {"Agendado": "#28a745", "Reagendado": "#17a2b8", "Cancelado": "#dc3545", "Retornar ligação": "#ffc107", "Enviar info": "#6c757d", "Sem vaga": "#343a40", "Não Agendou": "#fd7e14", "Ligação errada": "#000000"}
 
 def convert_to_local(df, col='created_at'):
     if df.empty or col not in df.columns: return df
@@ -98,7 +102,7 @@ with st.sidebar:
     st.caption(f"👤 {st.session_state['user'].email}")
     if st.button("Sair"): auth_service.logout(); st.rerun()
 
-with st.sidebar.expander("➕ Novo Lead"):
+with st.sidebar.expander("➕ Novo Lead Manual"):
     with st.form("nl", clear_on_submit=True):
         n=st.text_input("Nome"); p=st.text_input("Tel"); src=st.selectbox("Origem", ["Balcão","Indicação","Outro"]); obs=st.text_area("Nota")
         if st.form_submit_button("Salvar") and n and p:
@@ -119,7 +123,7 @@ if page == "Dashboard":
     df = get_calls(current_org_id, 30)
     if not df.empty:
         c1,c2,c3,c4 = st.columns(4)
-        c1.metric("Chamadas", len(df))
+        c1.metric("Chamadas (30d)", len(df))
         c2.metric("Atendidas", len(df[df['status']=='completed']))
         c3.metric("Únicos", df['from_number'].nunique())
         c4.metric("Duração", format_duration(df['duration'].mean()))
@@ -165,42 +169,86 @@ elif page == "CRM":
                     ns = st.selectbox("Mover", s_names, index=s_names.index(s['name']), key=f"mv_{d['id']}", label_visibility="collapsed")
                     if ns != s['name']: db_service.update_deal_stage(d['id'], s_map[ns]); st.toast("Movido"); time.sleep(0.5); st.rerun()
 
+# ============================================================================
+# PÁGINA UNIFICADA: LIGAÇÕES
+# ============================================================================
 elif page == "Ligações":
-    st.title("Log de Ligações")
-    c1,c2,c3,c4 = st.columns(4)
-    with c1: period = st.selectbox("Dias", [1, 7, 30], index=1)
-    with c2: status = st.selectbox("Status", ["Todos", "completed", "missed"])
-    with c3: tag_f = st.multiselect("Tags", TAG_OPTIONS)
-    with c4: search = st.text_input("Busca")
+    st.title("Histórico de Ligações")
+    
+    # Filtros
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: period = st.selectbox("Período", [1, 7, 30, 60], index=2)
+    with c2: status_filter = st.selectbox("Status", ["Todos", "completed", "missed", "busy"])
+    with c3: tag_filter = st.multiselect("Filtrar Tags", TAG_OPTIONS)
+    with c4: search = st.text_input("Buscar Número")
     
     df = get_calls(current_org_id, days=period)
+    
+    # Aplica Filtros
     if not df.empty:
-        if status != "Todos": df = df[df['status']==status]
+        if status_filter != "Todos": df = df[df['status'] == status_filter]
         if search: df = df[df['from_number'].astype(str).str.contains(search) | df['to_number'].astype(str).str.contains(search)]
-        if tag_f: df = df[df['tags'].isin(tag_f)]
-
+        if tag_filter: df = df[df['tags'].isin(tag_filter)]
+    
     if not df.empty:
-        df['Data'] = df['created_at'].apply(format_date_br)
-        df['Duração'] = df['duration'].apply(format_duration)
+        # KPIs
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Listadas", len(df))
+        k2.metric("Gravadas", len(df[df['recording_url'].notna()]))
+        k3.metric("Duração Média", format_duration(df['duration'].mean()))
+        st.divider()
+
+        # LISTAGEM (Estilo Cards Expansíveis - Mais Robusto)
+        # Substitui o data_editor problemático
+        st.caption("Clique para expandir, ouvir e classificar.")
         
-        # Tabela rica com AudioColumn
-        edited = st.data_editor(
-            df[['Data', 'from_number', 'status', 'Duração', 'recording_url', 'tags', 'call_sid']],
-            column_config={
-                "recording_url": st.column_config.AudioColumn("Gravação"),
-                "tags": st.column_config.SelectboxColumn("Classificação", options=TAG_OPTIONS),
-                "call_sid": None
-            },
-            hide_index=True, use_container_width=True, height=600, key="log_edit"
-        )
-        
-        if len(edited) == len(df):
-            orig = df['tags'].fillna("").astype(str); new = edited['tags'].fillna("").astype(str)
-            if (orig != new).any():
-                for idx in (orig != new).index[orig != new]:
-                    db_service.update_call_tag(edited.loc[idx]['call_sid'], edited.loc[idx]['tags'])
-                st.toast("Salvo!"); time.sleep(0.5); clear_cache(); st.rerun()
-    else: st.info("Nenhum registro.")
+        for idx, row in df.iterrows():
+            tag = row['tags']
+            # Ícone de Tag Colorida
+            tag_display = "⬜ Classificar"
+            if tag and tag in TAG_COLORS:
+                tag_display = f"🏷️ {tag}"
+            
+            has_rec = "🎵" if row['recording_url'] else "🔇"
+            header_text = f"{has_rec} {format_date_br(row['created_at'])} | {row['from_number']} | {tag_display}"
+            
+            with st.expander(header_text):
+                col1, col2, col3 = st.columns([1, 1, 1])
+                
+                with col1:
+                    st.markdown(f"**De:** `{row['from_number']}`")
+                    st.markdown(f"**Para:** `{row['to_number']}`")
+                    st.caption(f"Status: {row['status']} | Duração: {format_duration(row['duration'])}")
+
+                with col2:
+                    if row['recording_url']:
+                        st.audio(row['recording_url'])
+                    else:
+                        st.info("Sem gravação")
+
+                with col3:
+                    # Seletor de Tag (Salva ao mudar)
+                    current_idx = TAG_OPTIONS.index(tag) if tag in TAG_OPTIONS else 0
+                    new_tag = st.selectbox(
+                        "Classificação",
+                        ["Limpar"] + TAG_OPTIONS,
+                        index=current_idx + 1 if tag in TAG_OPTIONS else 0,
+                        key=f"tag_{row['call_sid']}",
+                        label_visibility="collapsed"
+                    )
+                    
+                    val = new_tag if new_tag != "Limpar" else None
+                    if val != tag:
+                        db_service.update_call_tag(row['call_sid'], val)
+                        st.toast(f"Salvo: {val}")
+                        time.sleep(0.5)
+                        st.rerun()
+                    
+                    if tag in TAG_COLORS:
+                        st.markdown(f"<span class='tag-badge' style='background:{TAG_COLORS[tag]}'>{tag}</span>", unsafe_allow_html=True)
+
+    else:
+        st.info("Nenhuma chamada encontrada.")
 
 elif page == "Rotas":
     st.title("Rotas")
@@ -226,7 +274,8 @@ elif page == "Tracking":
         base=st.text_input("Site"); src=st.selectbox("Source", ["google","fb"]); num=st.text_input("Tel")
         if st.button("Gerar"): st.code(f"{base}?utm_source={src}&phone={num}")
     with t2:
-        st.code("""<script>
+        # Script DNI com Raw String (r"") para corrigir SyntaxWarning
+        js = r"""<script>
 function getP(n){return decodeURIComponent((new RegExp('[?|&]'+n+'=([^&;]+?)(&|#|;|$)').exec(location.search)||[,""])[1].replace(/\+/g,'%20'))||null}
 window.onload=function(){
   var p = getP('phone');
@@ -236,7 +285,8 @@ window.onload=function(){
     console.log("DNI: Phone changed to " + p);
   }
 }
-</script>""", language="html")
+</script>"""
+        st.code(js, language="html")
     with t3:
         perf = db_service.get_marketing_performance(current_org_id)
         if perf: st.dataframe(pd.DataFrame(perf))
@@ -252,6 +302,7 @@ elif page == "Admin Global" and user_role == 'super_admin':
                 for i in (ed['name']!=df_o['name']).index[ed['name']!=df_o['name']]:
                     db_service.update_organization_name(ed.loc[i]['id'], ed.loc[i]['name'])
                 st.toast("Salvo!"); time.sleep(0.5); st.rerun()
+    
     st.divider()
     with st.form("new_org"):
         nm = st.text_input("Nova Clínica")
