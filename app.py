@@ -313,40 +313,126 @@ if page == "Dashboard Geral":
         st.info("Nenhuma chamada registrada no período selecionado")
 
 # ============================================================================
-# PÁGINA: CRM
+# PÁGINA: CRM / KANBAN
 # ============================================================================
 
 elif page == "CRM (Beta)":
     st.title("Pipeline de Vendas")
     
-    # 1. Buscar Colunas
+    # 1. Carregar Dados
     stages = supabase.table('pipeline_stages').select('*').order('position').execute().data
+    deals = supabase.table('deals').select('*, contacts(phone_number, name, lead_score)').eq('status', 'OPEN').order('last_activity_at', desc=True).execute().data
     
-    # 2. Buscar Deals (Abertos)
-    deals = supabase.table('deals').select('*, contacts(phone_number, name)').eq('status', 'OPEN').order('last_activity_at', desc=True).execute().data
-    
-    # Layout de Colunas
+    # Mapeamento para o Dropdown (ID -> Nome)
+    stage_options = {s['name']: s['id'] for s in stages}
+    stage_names = list(stage_options.keys())
+    stage_map_reverse = {s['id']: s['name'] for s in stages}
+
+    # --- FUNÇÃO DO MODAL DE DETALHES ---
+    @st.dialog("Histórico do Lead", width="large")
+    def show_lead_details(deal, contact_id):
+        contact = deal['contacts']
+        st.subheader(f"{contact.get('name', 'Desconhecido')} | {contact['phone_number']}")
+        
+        # Abas dentro do modal
+        tab_timeline, tab_actions = st.tabs(["⏳ Linha do Tempo", "⚙️ Ações"])
+        
+        with tab_timeline:
+            timeline = db.get_contact_timeline(contact_id)
+            if not timeline:
+                st.info("Nenhum histórico registrado.")
+            
+            for event in timeline:
+                # Ícone baseado no tipo
+                icon = "🔹"
+                if event['event_type'] == 'CALL_INBOUND': icon = "📞"
+                elif event['event_type'] == 'TAG_CHANGE': icon = "🏷️"
+                elif event['event_type'] == 'NOTE': icon = "📝"
+                
+                # Data formatada
+                dt = pd.to_datetime(event['created_at']).strftime('%d/%m %H:%M')
+                
+                with st.chat_message("user" if event['event_type'] == 'NOTE' else "assistant", avatar=icon):
+                    st.write(f"**{dt}** - {event['description']}")
+                    # Mostrar metadados (ex: player de audio)
+                    meta = event.get('metadata')
+                    if meta and isinstance(meta, dict):
+                        if meta.get('recording_url'):
+                            st.audio(meta['recording_url'])
+                        if meta.get('new_tag'):
+                            st.caption(f"Tag: {meta['new_tag']}")
+
+        with tab_actions:
+            st.write("Anotações manuais (Em breve)")
+            # Aqui futuramente colocaremos campo para adicionar nota
+
+    # --- RENDERIZAÇÃO DAS COLUNAS ---
     cols = st.columns(len(stages))
     
     for i, stage in enumerate(stages):
         with cols[i]:
-            # Cabeçalho da Coluna
-            st.markdown(f"### {stage['name']}")
-            st.markdown(f"---")
+            # Cabeçalho com contagem e cor
+            count = len([d for d in deals if d['stage_id'] == stage['id']])
+            border_color = stage.get('color', '#ccc')
             
-            # Filtrar cards desta coluna
+            st.markdown(
+                f"""
+                <div style="border-top: 3px solid {border_color}; padding-top: 5px; margin-bottom: 10px;">
+                    <h4 style="margin:0">{stage['name']} <span style="font-size:0.8em; background:#eee; padding:2px 6px; border-radius:10px;">{count}</span></h4>
+                </div>
+                """, 
+                unsafe_allow_html=True
+            )
+            
+            # Filtrar deals desta coluna
             stage_deals = [d for d in deals if d['stage_id'] == stage['id']]
             
             for deal in stage_deals:
-                # Card Visual
-                contact_phone = deal['contacts']['phone_number'] if deal.get('contacts') else "Desconhecido"
+                contact = deal['contacts']
+                phone = contact['phone_number']
+                deal_id = deal['id']
                 
-                with st.container():
-                    st.info(f"""
-                    **{contact_phone}**  
-                    🕒 {pd.to_datetime(deal['last_activity_at']).strftime('%H:%M %d/%m')}
-                    """)
+                # O Card (Container com Borda)
+                with st.container(border=True):
+                    # Título do Card
+                    st.markdown(f"**{phone}**")
+                    
+                    # Info de Tempo
+                    last_activity = pd.to_datetime(deal['last_activity_at'])
+                    is_recent = (datetime.utcnow() - last_activity).total_seconds() < 3600 # 1 hora
+                    
+                    time_str = last_activity.strftime('%H:%M %d/%m')
+                    if is_recent:
+                        st.caption(f"🔥 {time_str}")
+                    else:
+                        st.caption(f"🕒 {time_str}")
 
+                    # --- AÇÃO 1: MOVER ---
+                    # Descobrir índice atual para o selectbox
+                    current_stage_name = stage['name']
+                    try:
+                        idx = stage_names.index(current_stage_name)
+                    except:
+                        idx = 0
+                        
+                    new_stage_name = st.selectbox(
+                        "Fase",
+                        stage_names,
+                        index=idx,
+                        key=f"move_{deal_id}",
+                        label_visibility="collapsed"
+                    )
+                    
+                    # Se mudou o selectbox, atualiza o banco
+                    if new_stage_name != current_stage_name:
+                        new_stage_id = stage_options[new_stage_name]
+                        db.update_deal_stage(deal_id, new_stage_id)
+                        st.toast(f"Movido para {new_stage_name}")
+                        st.rerun() # Recarrega a tela para mover o card visualmente
+
+                    # --- AÇÃO 2: VER DETALHES ---
+                    if st.button("Abrir Detalhes", key=f"btn_{deal_id}", use_container_width=True):
+                        show_lead_details(deal, contact['id'])
 # ============================================================================
 # PÁGINA: GERENCIAR ROTAS
 # ============================================================================
