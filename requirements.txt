@@ -24,5 +24,11 @@ pandas==2.1.3
 plotly==5.18.0
 gunicorn
 
-# IA
+# AI
 openai==1.30.0
+
+
+# AI Fallback
+SpeechRecognition==3.10.1
+pydub==0.25.1
+textblob==0.17.1
