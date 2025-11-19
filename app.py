@@ -552,7 +552,7 @@ elif page == "Chamadas":
         
         # Preparar DataFrame para exibição
         display_df = df.copy()
-        display_df['created_at'] = pd.to_datetime(display_df['created_at']).dt.strftime('%d/%m/%Y %H:%M')
+        display_df['created_at'] = pd.to_datetime(display_df['created_at'], format='mixed').dt.strftime('%d/%m/%Y %H:%M')
         display_df['duration'] = display_df['duration'].apply(format_duration)
         
         if 'tags' not in display_df.columns:
