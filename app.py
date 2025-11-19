@@ -1,7 +1,7 @@
 """
-Call Tracking Dashboard v3.3
-- Feat: Página unificada "Ligações" (Log + Áudio + Tags)
-- Fix: Remoção de páginas duplicadas
+Call Tracking Dashboard v3.4
+- Feat: Página 'Ligações' unificada
+- Fix: Nomes de Menu e Funções
 """
 import streamlit as st
 import pandas as pd
@@ -13,7 +13,6 @@ import time
 import pytz 
 from urllib.parse import urlencode
 
-# --- IMPORTS ---
 from services.database import get_database_service
 from services.ai_service import AIService
 from services.auth import AuthService
@@ -24,7 +23,6 @@ ai_service = AIService()
 auth_service = AuthService()
 analytics_service = AnalyticsService()
 
-# --- CONFIG ---
 st.set_page_config(page_title="Call Tracking", page_icon="📞", layout="wide")
 st.markdown("""<style>.metric-card{background:#f0f2f6;padding:20px;border-radius:10px;border-left:4px solid #1f77b4}.sla-green{border-left:5px solid #22c55e;padding-left:10px}.sla-yellow{border-left:5px solid #eab308;padding-left:10px}.sla-red{border-left:5px solid #ef4444;padding-left:10px;background:#fff5f5}div[data-testid="stForm"]{border:1px solid #ddd;padding:20px;border-radius:10px;max-width:400px;margin:0 auto}</style>""", unsafe_allow_html=True)
 
@@ -36,7 +34,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 if not auth_service.is_logged_in():
     c1,c2,c3=st.columns([1,2,1])
     with c2:
-        st.markdown("<br><h1 style='text-align:center'>🔐 Acesso Restrito</h1>",unsafe_allow_html=True)
+        st.markdown("<br><h1 style='text-align:center'>🔐 Login</h1>",unsafe_allow_html=True)
         with st.form("l"):
             e=st.text_input("Email");p=st.text_input("Senha",type="password")
             if st.form_submit_button("Entrar"):
@@ -50,12 +48,12 @@ user_org_id = st.session_state.get('user_org_id')
 current_org_id = user_org_id
 
 # Sidebar Admin
-st.sidebar.title("Painel de Controle")
+st.sidebar.title("Painel")
 if user_role == 'super_admin':
     all_orgs = db_service.get_all_organizations()
     if all_orgs:
         org_map = {o['name']: o['id'] for o in all_orgs}
-        sel_name = st.sidebar.selectbox("📁 Cliente / Visão", list(org_map.keys()))
+        sel_name = st.sidebar.selectbox("📁 Cliente", list(org_map.keys()))
         current_org_id = org_map[sel_name]
         st.sidebar.markdown("---")
 else:
@@ -75,6 +73,7 @@ def convert_to_local(df, col='created_at'):
     return df
 
 def format_duration(s): return f"{int(s//60):02d}:{int(s%60):02d}" if s else "00:00"
+def format_date_br(dt): return dt.strftime('%d/%m %H:%M') if not pd.isna(dt) else ""
 def clear_cache(): st.cache_data.clear()
 
 @st.cache_data(ttl=60)
@@ -99,19 +98,16 @@ with st.sidebar:
     st.caption(f"👤 {st.session_state['user'].email}")
     if st.button("Sair"): auth_service.logout(); st.rerun()
 
-with st.sidebar.expander("➕ Novo Lead Manual"):
+with st.sidebar.expander("➕ Novo Lead"):
     with st.form("nl", clear_on_submit=True):
         n=st.text_input("Nome"); p=st.text_input("Tel"); src=st.selectbox("Origem", ["Balcão","Indicação","Outro"]); obs=st.text_area("Nota")
         if st.form_submit_button("Salvar") and n and p:
             db_service.create_manual_lead(n, p, src, current_org_id, obs); st.success("Ok!"); clear_cache(); st.session_state['pg']="CRM"; time.sleep(0.5); st.rerun()
 
 if 'pg' not in st.session_state: st.session_state['pg'] = "Dashboard"
-
-# MENU ATUALIZADO
 menu_opts = ["Dashboard", "CRM", "Ligações", "Rotas", "Analytics", "Tracking"]
 if user_role == 'super_admin': menu_opts.append("Admin Global")
 page = st.sidebar.radio("Menu", menu_opts, key="pg")
-
 if st.sidebar.button("Atualizar"): clear_cache(); st.rerun()
 
 # ============================================================================
@@ -123,7 +119,7 @@ if page == "Dashboard":
     df = get_calls(current_org_id, 30)
     if not df.empty:
         c1,c2,c3,c4 = st.columns(4)
-        c1.metric("Chamadas (30d)", len(df))
+        c1.metric("Chamadas", len(df))
         c2.metric("Atendidas", len(df[df['status']=='completed']))
         c3.metric("Únicos", df['from_number'].nunique())
         c4.metric("Duração", format_duration(df['duration'].mean()))
@@ -170,51 +166,41 @@ elif page == "CRM":
                     if ns != s['name']: db_service.update_deal_stage(d['id'], s_map[ns]); st.toast("Movido"); time.sleep(0.5); st.rerun()
 
 elif page == "Ligações":
-    st.title("Histórico de Ligações")
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: period = st.selectbox("Período", [1, 7, 30, 60], index=2)
-    with c2: status_filter = st.selectbox("Status", ["Todos", "completed", "missed", "busy"])
-    with c3: tag_filter = st.multiselect("Filtrar Tags", TAG_OPTIONS)
-    with c4: search = st.text_input("Buscar Número")
+    st.title("Log de Ligações")
+    c1,c2,c3,c4 = st.columns(4)
+    with c1: period = st.selectbox("Dias", [1, 7, 30], index=1)
+    with c2: status = st.selectbox("Status", ["Todos", "completed", "missed"])
+    with c3: tag_f = st.multiselect("Tags", TAG_OPTIONS)
+    with c4: search = st.text_input("Busca")
     
     df = get_calls(current_org_id, days=period)
-    
     if not df.empty:
-        if status_filter != "Todos": df = df[df['status'] == status_filter]
+        if status != "Todos": df = df[df['status']==status]
         if search: df = df[df['from_number'].astype(str).str.contains(search) | df['to_number'].astype(str).str.contains(search)]
-        if tag_filter: df = df[df['tags'].isin(tag_filter)]
-    
-    if not df.empty:
-        k1, k2, k3 = st.columns(3)
-        k1.metric("Listadas", len(df))
-        k2.metric("Gravadas", len(df[df['recording_url'].notna()]))
-        k3.metric("Duração Média", format_duration(df['duration'].mean()))
-        st.divider()
+        if tag_f: df = df[df['tags'].isin(tag_f)]
 
-        df['Data'] = df['created_at']
+    if not df.empty:
+        df['Data'] = df['created_at'].apply(format_date_br)
         df['Duração'] = df['duration'].apply(format_duration)
         
+        # Tabela rica com AudioColumn
         edited = st.data_editor(
-            df[['Data', 'from_number', 'to_number', 'status', 'Duração', 'recording_url', 'tags', 'call_sid']],
+            df[['Data', 'from_number', 'status', 'Duração', 'recording_url', 'tags', 'call_sid']],
             column_config={
-                "recording_url": st.column_config.AudioColumn("Gravação", help="Play"),
-                "tags": st.column_config.SelectboxColumn("Classificação", options=TAG_OPTIONS, width="medium"),
-                "Data": st.column_config.DatetimeColumn("Data", format="DD/MM HH:mm"),
-                "status": st.column_config.TextColumn("Status"),
+                "recording_url": st.column_config.AudioColumn("Gravação"),
+                "tags": st.column_config.SelectboxColumn("Classificação", options=TAG_OPTIONS),
                 "call_sid": None
             },
-            use_container_width=True, hide_index=True, height=600, key="call_log_editor"
+            hide_index=True, use_container_width=True, height=600, key="log_edit"
         )
         
         if len(edited) == len(df):
             orig = df['tags'].fillna("").astype(str); new = edited['tags'].fillna("").astype(str)
             if (orig != new).any():
                 for idx in (orig != new).index[orig != new]:
-                    sid = edited.loc[idx]['call_sid']; tag = edited.loc[idx]['tags']
-                    db_service.update_call_tag(sid, tag if tag and tag.strip() else "Limpar")
-                st.toast("Salvo!"); clear_cache(); time.sleep(0.5); st.rerun()
-    else:
-        st.info("Nenhuma chamada.")
+                    db_service.update_call_tag(edited.loc[idx]['call_sid'], edited.loc[idx]['tags'])
+                st.toast("Salvo!"); time.sleep(0.5); clear_cache(); st.rerun()
+    else: st.info("Nenhum registro.")
 
 elif page == "Rotas":
     st.title("Rotas")
@@ -266,7 +252,6 @@ elif page == "Admin Global" and user_role == 'super_admin':
                 for i in (ed['name']!=df_o['name']).index[ed['name']!=df_o['name']]:
                     db_service.update_organization_name(ed.loc[i]['id'], ed.loc[i]['name'])
                 st.toast("Salvo!"); time.sleep(0.5); st.rerun()
-    
     st.divider()
     with st.form("new_org"):
         nm = st.text_input("Nova Clínica")
