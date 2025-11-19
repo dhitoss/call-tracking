@@ -17,11 +17,14 @@ import pytz
 from services.database import get_database_service
 from services.ai_service import AIService
 from services.auth import AuthService
+from services.analytics import AnalyticsService
 
 # Inicialização
 db_service = get_database_service()
 ai_service = AIService()
 auth_service = AuthService()
+analytics_service = AnalyticsService()
+
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -283,6 +286,120 @@ elif page == "Gravações":
                     if nt != (tag or "Limpar"):
                         update_call_tag(c['call_sid'], nt if nt!="Limpar" else None)
                         st.toast("Salvo!"); time.sleep(0.5); clear_cache(); st.rerun()
+
+# ============================================================================
+# PÁGINA: ANALYTICS AVANÇADO (DASHBOARD EXECUTIVO)
+# ============================================================================
+
+elif page == "Analytics Avançado":
+    st.title("📈 Dashboard de Performance")
+    st.caption("Visão estratégica de conversão e eficiência da equipe.")
+    
+    # Filtro Global
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        days = st.selectbox("Período de Análise", [7, 15, 30, 60, 90], index=2)
+    
+    # --- CARREGAMENTO DE DADOS ---
+    kpis = analytics_service.get_kpis(days=days)
+    
+    # 1. LINHA DE KPIS (TOPO)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Leads Totais", kpis['total_leads'], help="Cards criados no CRM")
+    c2.metric("Agendamentos", kpis['total_agendados'], help="Leads na fase Agendado")
+    
+    delta_color = "normal"
+    if kpis['conversion_rate'] > 20: delta_color = "normal" # Verde implícito se positivo
+    elif kpis['conversion_rate'] < 5: delta_color = "inverse"
+    
+    c3.metric("Taxa Conversão", f"{kpis['conversion_rate']:.1f}%", delta="Global", delta_color="off")
+    c4.metric("Chamadas Brutas", kpis['total_calls'], help="Ligações recebidas no total")
+    
+    st.markdown("---")
+    
+    # 2. FUNIL DE VENDAS + SLA (MEIO)
+    col_left, col_right = st.columns([2, 1])
+    
+    with col_left:
+        st.subheader("Funil de Conversão")
+        funnel_df = analytics_service.get_funnel_data(days=days)
+        
+        if not funnel_df.empty:
+            fig_funnel = px.funnel(
+                funnel_df, 
+                x='count', 
+                y='stage_name', 
+                color='stage_name',
+                title=None
+            )
+            st.plotly_chart(fig_funnel, use_container_width=True)
+        else:
+            st.info("Sem dados suficientes para o funil.")
+            
+    with col_right:
+        st.subheader("Saúde do Inbox (SLA)")
+        sla = analytics_service.get_sla_metrics()
+        
+        # Gráfico de Rosca para SLA
+        sla_data = pd.DataFrame([
+            {"Status": "No Prazo (<30min)", "Qtd": sla['ok'], "Color": "#22c55e"},
+            {"Status": "Atenção (30min-2h)", "Qtd": sla['warning'], "Color": "#eab308"},
+            {"Status": "Crítico (>2h)", "Qtd": sla['critical'], "Color": "#ef4444"}
+        ])
+        # Filtra zeros para não ficar feio
+        sla_data = sla_data[sla_data['Qtd'] > 0]
+        
+        if not sla_data.empty:
+            fig_sla = px.pie(
+                sla_data, 
+                values='Qtd', 
+                names='Status', 
+                color='Status',
+                color_discrete_map={"No Prazo (<30min)":"#22c55e", "Atenção (30min-2h)":"#eab308", "Crítico (>2h)":"#ef4444"},
+                hole=0.5
+            )
+            fig_sla.update_layout(showlegend=True, legend=dict(orientation="h"))
+            st.plotly_chart(fig_sla, use_container_width=True)
+            
+            total_backlog = sla['ok'] + sla['warning'] + sla['critical']
+            st.caption(f"Total de {total_backlog} leads aguardando no Inbox.")
+        else:
+            st.success("🎉 Inbox Zerado! Nenhum lead aguardando.")
+
+    # 3. ORIGEM E TENDÊNCIAS (BASE)
+    c1, c2 = st.columns(2)
+    
+    with c1:
+        st.subheader("Origem dos Leads")
+        source_df = analytics_service.get_leads_by_source(days=days)
+        if not source_df.empty:
+            # Traduzir termos técnicos
+            source_map = {'voice': 'Telefone', 'manual': 'Balcão/Manual', 'whatsapp': 'WhatsApp'}
+            source_df['source'] = source_df['source'].map(lambda x: source_map.get(x, x))
+            
+            fig_source = px.pie(source_df, names='source', hole=0.0)
+            st.plotly_chart(fig_source, use_container_width=True)
+        else:
+            st.info("Sem dados de origem.")
+            
+    with c2:
+        st.subheader("Volume de Leads por Dia")
+        # Reutiliza a função get_calls para o gráfico de linha, mas focado em leads
+        # Para simplificar o MVP, usaremos get_calls, mas o ideal seria query na tabela deals
+        # Vamos fazer uma query rápida aqui
+        start_iso = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        deals_hist = db_service.client.table('deals').select('created_at').gte('created_at', start_iso).execute()
+        
+        if deals_hist.data:
+            df_hist = pd.DataFrame(deals_hist.data)
+            df_hist['created_at'] = pd.to_datetime(df_hist['created_at']).dt.date
+            daily_leads = df_hist.groupby('created_at').size().reset_index(name='leads')
+            
+            fig_line = px.bar(daily_leads, x='created_at', y='leads')
+            st.plotly_chart(fig_line, use_container_width=True)
+        else:
+            st.info("Sem histórico recente.")
+
 
 elif page == "Gerenciar Rotas":
     st.title("Rotas")
