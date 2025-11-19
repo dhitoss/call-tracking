@@ -1,5 +1,5 @@
 """
-Database Service - COMPLETO (v2.8 - Fix Missing Methods)
+Database Service - v3.1 (Admin Tools & Fixes)
 """
 from supabase import create_client, Client
 from typing import List, Optional, Dict, Any
@@ -22,30 +22,40 @@ class DatabaseService:
     def _initialize(self):
         url = os.getenv('SUPABASE_URL')
         key = os.getenv('SUPABASE_KEY')
-        if not url or not key:
-            logger.error("❌ Supabase credentials missing")
-            return
-        try:
-            self.client = create_client(url, key)
-        except Exception as e:
-            logger.error(f"❌ Init error: {e}")
+        if not url: return
+        self.client = create_client(url, key)
 
-    # --- ADMIN TOOLS ---
+    # --- ADMIN & GESTÃO ---
     def get_all_organizations(self):
-        """Retorna lista de todas as organizações (Para Super Admin)"""
+        """Lista todas as empresas para o Super Admin."""
+        return self.client.table('organizations').select('*').order('created_at').execute().data
+
+    def update_organization_name(self, org_id, new_name):
+        """Altera o nome de uma empresa/clínica."""
         try:
-            return self.client.table('organizations').select('id, name').execute().data
+            self.client.table('organizations').update({'name': new_name}).eq('id', org_id).execute()
+            return True
         except Exception as e:
-            logger.error(f"Get orgs error: {e}")
-            return []
+            logger.error(f"Update Org Error: {e}")
+            return False
+
+    def create_organization(self, name):
+        """Cria nova empresa."""
+        try:
+            return self.client.table('organizations').insert({'name': name}).execute()
+        except Exception as e:
+            logger.error(f"Create Org Error: {e}")
+            return None
 
     # --- TELEFONIA ---
     def get_destination_number(self, tracking_number: str, campaign: str = None) -> Optional[str]:
         try:
             if campaign:
-                res = self.client.table('phone_routing').select('destination_number').eq('tracking_number', tracking_number).eq('is_active', True).eq('campaign', campaign).execute()
+                res = self.client.table('phone_routing').select('destination_number')\
+                    .eq('tracking_number', tracking_number).eq('is_active', True).eq('campaign', campaign).execute()
                 if res.data: return res.data[0]['destination_number']
-            res = self.client.table('phone_routing').select('destination_number').eq('tracking_number', tracking_number).eq('is_active', True).is_('campaign', 'null').execute()
+            res = self.client.table('phone_routing').select('destination_number')\
+                .eq('tracking_number', tracking_number).eq('is_active', True).is_('campaign', 'null').execute()
             return res.data[0]['destination_number'] if res.data else None
         except: return None
 
@@ -93,6 +103,11 @@ class DatabaseService:
         clean = {k: v for k, v in call_data.items() if v is not None}
         return self.client.table('calls').insert(clean).execute()
 
+    def update_call_tag(self, call_sid: str, tag: str) -> bool:
+        val = tag if tag and tag != "Limpar" else None
+        self.client.table('calls').update({'tags': val}).eq('call_sid', call_sid).execute()
+        return True
+
     def update_call_status(self, call_sid, status, duration=0):
         data = {'status': status, 'updated_at': datetime.utcnow().isoformat()}
         if duration > 0: data['duration'] = duration
@@ -101,11 +116,6 @@ class DatabaseService:
     def update_call_recording(self, call_sid, url, sid, duration):
         data = {'recording_url': url, 'recording_sid': sid, 'recording_duration': duration, 'updated_at': datetime.utcnow().isoformat()}
         self.client.table('calls').update(data).eq('call_sid', call_sid).execute()
-
-    def update_call_tag(self, call_sid: str, tag: str) -> bool:
-        val = tag if tag and tag != "Limpar" else None
-        self.client.table('calls').update({'tags': val}).eq('call_sid', call_sid).execute()
-        return True
 
     # --- CRM ---
     def update_deal_stage(self, deal_id: str, new_stage_id: str) -> bool:
@@ -121,10 +131,8 @@ class DatabaseService:
             now = datetime.utcnow().isoformat()
             c_res = self.client.table('contacts').select('id').eq('phone_number', phone).eq('organization_id', org_id).execute()
             if c_res.data: cid = c_res.data[0]['id']
-            else:
-                cid = self.client.table('contacts').insert({'phone_number': phone, 'name': name, 'organization_id': org_id, 'created_at': now}).execute().data[0]['id']
+            else: cid = self.client.table('contacts').insert({'phone_number': phone, 'name': name, 'organization_id': org_id, 'created_at': now}).execute().data[0]['id']
             
-            # Busca estágio padrão
             s_res = self.client.table('pipeline_stages').select('id').eq('is_default', True).limit(1).execute()
             sid = s_res.data[0]['id'] if s_res.data else None
             
