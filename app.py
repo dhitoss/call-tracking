@@ -1,6 +1,8 @@
 """
-Call Tracking Dashboard v3.5.1
-- Fix: AttributeError em metadata nulo na Timeline
+Call Tracking Dashboard v3.6
+- Feat: Gestão Avançada de Contatos (Edição, Preferências, Auditoria)
+- Fix: Regras de negócio para edição de telefone
+- Core: CRM, Ligações, IA, Multi-Tenancy
 """
 import streamlit as st
 import pandas as pd
@@ -25,7 +27,7 @@ analytics_service = AnalyticsService()
 
 # --- CONFIG ---
 st.set_page_config(page_title="Call Tracking", page_icon="📞", layout="wide")
-st.markdown("""<style>.metric-card{background:#f0f2f6;padding:20px;border-radius:10px;border-left:4px solid #1f77b4}.sla-green{border-left:5px solid #22c55e;padding-left:10px}.sla-yellow{border-left:5px solid #eab308;padding-left:10px}.sla-red{border-left:5px solid #ef4444;padding-left:10px;background:#fff5f5}div[data-testid="stForm"]{border:1px solid #ddd;padding:20px;border-radius:10px;max-width:400px;margin:0 auto}</style>""", unsafe_allow_html=True)
+st.markdown("""<style>.metric-card{background:#f0f2f6;padding:20px;border-radius:10px;border-left:4px solid #1f77b4}.tag-badge{padding:4px 8px;border-radius:4px;color:white;font-weight:bold;font-size:0.85em;display:inline-block}.sla-green{border-left:5px solid #22c55e;padding-left:10px}.sla-yellow{border-left:5px solid #eab308;padding-left:10px}.sla-red{border-left:5px solid #ef4444;padding-left:10px;background:#fff5f5}div[data-testid="stForm"]{border:1px solid #ddd;padding:20px;border-radius:10px;max-width:400px;margin:0 auto}</style>""", unsafe_allow_html=True)
 
 SUPABASE_URL = os.getenv('SUPABASE_URL'); SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 if not SUPABASE_URL: st.stop()
@@ -134,24 +136,66 @@ elif page == "CRM":
     deals = supabase.table('deals').select('*, contacts(id, phone_number, name)').eq('organization_id', current_org_id).eq('status', 'OPEN').order('last_activity_at', desc=True).execute().data
     s_map = {s['name']: s['id'] for s in stages}; s_names = [s['name'] for s in stages]
 
-    @st.dialog("Detalhes", width="large")
+    @st.dialog("Detalhes do Lead", width="large")
     def details(deal, cid):
-        contact = deal['contacts']
-        st.subheader(f"{contact.get('name')} | {contact['phone_number']}")
-        t1, t2 = st.tabs(["Timeline", "IA"])
+        # Busca contato fresco para garantir dados atualizados
+        c_data = supabase.table('contacts').select('*').eq('id', cid).single().execute().data
+        if not c_data: st.error("Erro ao carregar contato."); return
+        
+        st.subheader(f"{c_data.get('name','Lead')} | {c_data.get('phone_number')}")
+        t1, t2, t3 = st.tabs(["👤 Dados", "⏳ Timeline", "🤖 IA"])
+        
+        # ABA 1: DADOS (Edição)
         with t1:
-            for e in db_service.get_contact_timeline(cid):
-                dt = pd.to_datetime(e['created_at']).replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).strftime('%d/%m %H:%M')
-                st.markdown(f"**{dt}** - {e['description']}")
-                
-                # FIX: Verificação segura de metadata
-                meta = e.get('metadata') or {}
-                if isinstance(meta, dict) and meta.get('recording_url'): 
-                    st.audio(meta['recording_url'])
+            with st.form("edit_contact"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    nn = st.text_input("Nome", value=c_data.get('name',''))
+                    ne = st.text_input("Email", value=c_data.get('email',''))
+                with c2:
+                    is_man = c_data.get('is_manual', False)
+                    # Bloqueia telefone se não for manual
+                    np = st.text_input("Telefone", value=c_data.get('phone_number',''), disabled=not is_man, help="Editável apenas para leads manuais.")
                     
+                    pref_ops = ["whatsapp", "phone", "email"]
+                    cur_p = c_data.get('contact_preference', 'whatsapp')
+                    idx_p = pref_ops.index(cur_p) if cur_p in pref_ops else 0
+                    npref = st.selectbox("Preferência", pref_ops, index=idx_p)
+                
+                if st.form_submit_button("💾 Salvar"):
+                    u_email = st.session_state['user'].email
+                    d = {'name':nn, 'email':ne, 'phone_number':np, 'contact_preference':npref}
+                    if db_service.update_contact_details(cid, d, u_email):
+                        st.success("Salvo!"); time.sleep(0.5); st.rerun()
+                    else: st.error("Erro.")
+
+        # ABA 2: TIMELINE
         with t2:
-            c_res = supabase.table('calls').select('*').eq('from_number', contact['phone_number']).ilike('recording_url', 'http%').order('created_at', desc=True).limit(1).execute()
-            if not c_res.data: c_res = supabase.table('calls').select('*').eq('to_number', contact['phone_number']).ilike('recording_url', 'http%').order('created_at', desc=True).limit(1).execute()
+            for e in db_service.get_contact_timeline(cid):
+                icon = "📝"
+                if 'CALL' in e['event_type']: icon = "📞"
+                elif 'WHATS' in e['event_type']: icon = "💬"
+                elif 'SYSTEM' in e['event_type']: icon = "⚙️"
+                
+                dt = pd.to_datetime(e['created_at']).replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).strftime('%d/%m %H:%M')
+                author = f" ({e.get('created_by')})" if e.get('created_by') and e.get('created_by') != 'SYSTEM' else ""
+                
+                with st.chat_message("assistant", avatar=icon):
+                    st.markdown(f"**{dt}**{author}")
+                    st.write(e['description'])
+                    meta = e.get('metadata') or {}
+                    if isinstance(meta, dict):
+                        if meta.get('recording_url'): st.audio(meta['recording_url'])
+                        if meta.get('new_tag'): 
+                            c = TAG_COLORS.get(meta['new_tag'], '#333')
+                            st.markdown(f":background[{c}] :color[white] **{meta['new_tag']}**")
+
+        # ABA 3: IA
+        with t3:
+            # Busca gravação (Origem ou Destino)
+            ph = c_data['phone_number']
+            c_res = supabase.table('calls').select('*').eq('from_number', ph).ilike('recording_url', 'http%').order('created_at', desc=True).limit(1).execute()
+            if not c_res.data: c_res = supabase.table('calls').select('*').eq('to_number', ph).ilike('recording_url', 'http%').order('created_at', desc=True).limit(1).execute()
             
             if c_res.data:
                 c = c_res.data[0]; st.audio(c['recording_url'])
@@ -168,7 +212,18 @@ elif page == "CRM":
                 sla = "sla-green" if diff < 30 else "sla-red" if diff > 120 else "sla-yellow"
                 with st.container():
                     st.markdown(f"<div class='{sla}' style='background:white;padding:10px;border-radius:5px;margin-bottom:10px;box-shadow:0 1px 3px rgba(0,0,0,0.1)'><b>{d['contacts']['phone_number']}</b><br><small>{d['contacts'].get('name','')}</small><br><small>{int(diff)}min</small></div>", unsafe_allow_html=True)
-                    if st.button("Ver", key=f"v_{d['id']}", use_container_width=True): details(d, d['contacts']['id'])
+                    
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        # Zap
+                        pc = d['contacts']['phone_number'].replace('+','').replace('-','')
+                        if st.button("💬 Zap", key=f"w_{d['id']}", use_container_width=True):
+                            db_service.log_interaction(d['id'], d['contacts']['id'], "OUTBOUND_WHATSAPP", "Abriu WhatsApp")
+                            st.link_button("🔗 Link", f"https://wa.me/{pc}")
+                            time.sleep(1); st.rerun()
+                    with c2:
+                        if st.button("📂 Ver", key=f"o_{d['id']}", use_container_width=True): details(d, d['contacts']['id'])
+                    
                     ns = st.selectbox("Mover", s_names, index=s_names.index(s['name']), key=f"mv_{d['id']}", label_visibility="collapsed")
                     if ns != s['name']: db_service.update_deal_stage(d['id'], s_map[ns]); st.toast("Movido"); time.sleep(0.5); st.rerun()
 
@@ -199,8 +254,7 @@ elif page == "Ligações":
         for idx, row in df.iterrows():
             tag = row['tags']
             tag_display = "⬜ Classificar"
-            if tag and tag in TAG_COLORS:
-                tag_display = f"🏷️ {tag}"
+            if tag and tag in TAG_COLORS: tag_display = f"🏷️ {tag}"
             
             has_rec = "🎵" if row['recording_url'] else "🔇"
             header_text = f"{has_rec} {format_date_br(row['created_at'])} | {row['from_number']} | {tag_display}"
@@ -221,10 +275,8 @@ elif page == "Ligações":
                     if val != tag:
                         db_service.update_call_tag(row['call_sid'], val)
                         st.toast(f"Salvo: {val}"); time.sleep(0.5); st.rerun()
-                    if tag in TAG_COLORS:
-                        st.markdown(f"<span class='tag-badge' style='background:{TAG_COLORS[tag]}'>{tag}</span>", unsafe_allow_html=True)
-    else:
-        st.info("Nenhuma chamada encontrada.")
+                    if tag in TAG_COLORS: st.markdown(f"<span class='tag-badge' style='background:{TAG_COLORS[tag]}'>{tag}</span>", unsafe_allow_html=True)
+    else: st.info("Nenhuma chamada encontrada.")
 
 elif page == "Rotas":
     st.title("Rotas")
