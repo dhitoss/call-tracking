@@ -181,6 +181,7 @@ page = st.sidebar.radio(
     "Navegação",
     [
         "Dashboard Geral",
+        "CRM (Beta)",
         "Gerenciar Rotas",
         "Chamadas",
         "Gravações",
@@ -310,6 +311,41 @@ if page == "Dashboard Geral":
         
     else:
         st.info("Nenhuma chamada registrada no período selecionado")
+
+# ============================================================================
+# PÁGINA: CRM
+# ============================================================================
+
+elif page == "CRM (Beta)":
+    st.title("Pipeline de Vendas")
+    
+    # 1. Buscar Colunas
+    stages = supabase.table('pipeline_stages').select('*').order('position').execute().data
+    
+    # 2. Buscar Deals (Abertos)
+    deals = supabase.table('deals').select('*, contacts(phone_number, name)').eq('status', 'OPEN').order('last_activity_at', desc=True).execute().data
+    
+    # Layout de Colunas
+    cols = st.columns(len(stages))
+    
+    for i, stage in enumerate(stages):
+        with cols[i]:
+            # Cabeçalho da Coluna
+            st.markdown(f"### {stage['name']}")
+            st.markdown(f"---")
+            
+            # Filtrar cards desta coluna
+            stage_deals = [d for d in deals if d['stage_id'] == stage['id']]
+            
+            for deal in stage_deals:
+                # Card Visual
+                contact_phone = deal['contacts']['phone_number'] if deal.get('contacts') else "Desconhecido"
+                
+                with st.container():
+                    st.info(f"""
+                    **{contact_phone}**  
+                    🕒 {pd.to_datetime(deal['last_activity_at']).strftime('%H:%M %d/%m')}
+                    """)
 
 # ============================================================================
 # PÁGINA: GERENCIAR ROTAS

@@ -11,10 +11,12 @@ import logging
 import os
 
 from services.database import DatabaseService
+from services.crm import CRMService
 
 # Setup
 app = Flask(__name__)
 logger = logging.getLogger(__name__)
+crm = CRMService()
 
 # Configurar logging
 logging.basicConfig(
@@ -116,7 +118,7 @@ def webhook_call() -> Any:
         if not destination:
             return _create_no_destination_response()
 
-        # 3. Registrar Chamada
+        # 3. Registrar Chamada & Atualizar CRM
         try:
             call_data = {
                 'call_sid': call_sid,
@@ -128,12 +130,25 @@ def webhook_call() -> Any:
                 'tracking_source_id': tracking_source_id,
                 'created_at': datetime.utcnow().isoformat()
             }
+            
+            # Salva Log da Chamada
             db.insert_call(call_data)
             logger.info("✅ Call inserted successfully")
+
+            # --- INTEGRAÇÃO CRM (NOVO) ---
+            # Tenta atualizar o Kanban, mas não trava a ligação se der erro
+            try:
+                logger.info(f"🔄 Triggering CRM for {from_number}")
+                crm.handle_incoming_call_event(call_data)
+                logger.info("✅ CRM updated successfully")
+            except Exception as crm_error:
+                logger.error(f"⚠️ CRM Update failed (non-blocking): {crm_error}")
+            # -----------------------------
+
         except Exception as db_error:
             logger.error(f"Insert Call Error: {db_error}")
         
-        # 4. Retornar TwiML
+        # 4. Retornar TwiML (Isso conecta a chamada)
         xml_response = _create_forward_response(
             destination=destination,
             from_number=from_number
