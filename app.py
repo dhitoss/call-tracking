@@ -1,6 +1,8 @@
 """
-Call Tracking Dashboard v2.1
-Dashboard profissional com Fuso Horário Brasileiro (BRT)
+Call Tracking Dashboard v2.2
+- Fix: Query complexa no Modal (AttributeError)
+- Fix: Timezones (DeprecationWarning)
+- Feat: CRM Interativo e IA
 """
 
 import streamlit as st
@@ -10,7 +12,7 @@ import os
 from datetime import datetime, timedelta, timezone
 import plotly.express as px
 import time
-import pytz # Nova dependência
+import pytz 
 
 # --- IMPORTS DOS SERVIÇOS ---
 from services.database import get_database_service
@@ -21,7 +23,6 @@ db_service = get_database_service()
 ai_service = AIService()
 
 # --- CONFIGURAÇÃO DE FUSO HORÁRIO ---
-# Pega do .env ou usa SP como padrão
 TZ_NAME = os.getenv('DEFAULT_TIMEZONE', 'America/Sao_Paulo')
 try:
     LOCAL_TZ = pytz.timezone(TZ_NAME)
@@ -75,23 +76,20 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ============================================================================
-# FUNÇÕES AUXILIARES (TIMEZONE & FORMAT)
+# FUNÇÕES AUXILIARES
 # ============================================================================
 
 def convert_to_local(df, col_name='created_at'):
-    """Converte coluna de data do DataFrame para o fuso local definido no .env"""
+    """Converte coluna de data do DataFrame para o fuso local"""
     if df.empty or col_name not in df.columns:
         return df
-    
-    # 1. Converte para datetime UTC
+    # 1. Converte para datetime UTC (mixed para aceitar com/sem microssegundos)
     df[col_name] = pd.to_datetime(df[col_name], format='mixed', utc=True)
-    
-    # 2. Converte para o fuso local (Ex: America/Sao_Paulo)
+    # 2. Converte para o fuso local
     df[col_name] = df[col_name].dt.tz_convert(LOCAL_TZ)
     return df
 
 def format_date_br(dt_obj):
-    """Formata objeto datetime para string PT-BR"""
     if pd.isna(dt_obj): return ""
     return dt_obj.strftime('%d/%m/%Y %H:%M')
 
@@ -112,7 +110,7 @@ def get_calls(days=30, status=None, campaign=None):
             if col not in df.columns: df[col] = None
             if col == 'duration': df[col] = df[col].fillna(0)
         
-        # APLICA CONVERSÃO DE FUSO AQUI
+        # APLICA CONVERSÃO DE FUSO
         df = convert_to_local(df, 'created_at')
         
     return df
@@ -142,7 +140,7 @@ def clear_cache(): st.cache_data.clear()
 # ============================================================================
 
 st.sidebar.title("Call Tracking")
-st.sidebar.markdown(f"🕒 **Fuso:** {TZ_NAME}") # Feedback visual
+st.sidebar.markdown(f"🕒 **Fuso:** {TZ_NAME}")
 st.sidebar.markdown("---")
 
 page = st.sidebar.radio("Navegação", ["Dashboard Geral", "CRM (Pipeline)", "Chamadas", "Gravações", "Gerenciar Rotas", "Analytics Avançado", "Configurações"])
@@ -176,7 +174,6 @@ if page == "Dashboard Geral":
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("Evolução Diária")
-            # Agrupamento respeitando o fuso horário local
             daily = df.groupby(df['created_at'].dt.date).size().reset_index(name='calls')
             st.plotly_chart(px.area(daily, x='created_at', y='calls'), use_container_width=True)
         with col2:
@@ -185,7 +182,6 @@ if page == "Dashboard Geral":
 
         st.subheader("Últimas Chamadas")
         recent = df.head(10).copy()
-        # Formatação visual BR
         recent['Data'] = recent['created_at'].apply(format_date_br)
         recent['Duração'] = recent['duration'].apply(format_duration)
         st.dataframe(recent[['Data', 'from_number', 'status', 'Duração', 'tags']], use_container_width=True, hide_index=True)
@@ -199,7 +195,7 @@ elif page == "CRM (Pipeline)":
     st.title("Pipeline de Atendimento")
     
     stages = supabase.table('pipeline_stages').select('*').order('position').execute().data
-    # Busca deals e converte data
+    # Busca deals - Importante: contacts(id, ...) para não dar erro
     deals_raw = supabase.table('deals').select('*, contacts(id, phone_number, name)').eq('status', 'OPEN').order('last_activity_at', desc=True).execute().data
     
     # Mapeamentos
@@ -219,7 +215,8 @@ elif page == "CRM (Pipeline)":
     @st.dialog("Histórico do Lead", width="large")
     def show_lead_details(deal, contact_id):
         contact = deal['contacts']
-        st.subheader(f"{contact.get('name','Lead')} | {contact['phone_number']}")
+        phone = contact['phone_number']
+        st.subheader(f"{contact.get('name','Lead')} | {phone}")
         
         tab1, tab2 = st.tabs(["⏳ Linha do Tempo", "🤖 IA Intelligence"])
         with tab1:
@@ -227,7 +224,6 @@ elif page == "CRM (Pipeline)":
             if not timeline: st.info("Vazio.")
             for ev in timeline:
                 icon = "📞" if ev['event_type']=='CALL_INBOUND' else "🏷️"
-                # Converte data do evento para local
                 ev_dt = pd.to_datetime(ev['created_at']).replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ)
                 
                 with st.chat_message("assistant", avatar=icon):
@@ -239,12 +235,29 @@ elif page == "CRM (Pipeline)":
                         st.markdown(f":background[{c}] :color[white] **{meta['new_tag']}**")
         
         with tab2:
-            phone = contact['phone_number']
-            calls = supabase.table('calls').select('*').or_(f"from_number.eq.{phone},to_number.eq.{phone}").not_.is_('recording_url', 'null').order('created_at', desc=True).limit(1).execute()
-            if calls.data:
-                c = calls.data[0]
+            # BUSCA SEGURA DE GRAVAÇÃO (Substitui a query complexa que dava erro)
+            # 1. Tenta achar onde o LEAD ligou
+            calls_res = supabase.table('calls').select('*')\
+                .eq('from_number', phone)\
+                .ilike('recording_url', 'http%')\
+                .order('created_at', desc=True).limit(1).execute()
+            
+            # 2. Se não achar, tenta onde o LEAD recebeu
+            if not calls_res.data:
+                calls_res = supabase.table('calls').select('*')\
+                    .eq('to_number', phone)\
+                    .ilike('recording_url', 'http%')\
+                    .order('created_at', desc=True).limit(1).execute()
+
+            if calls_res.data:
+                c = calls_res.data[0]
                 sid = c['call_sid']
+                # Converte data para mostrar
+                c_date = pd.to_datetime(c['created_at']).replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ)
+                
+                st.info(f"Chamada de: {c_date.strftime('%d/%m %H:%M')}")
                 st.audio(c['recording_url'])
+                
                 ana = supabase.table('ai_analysis').select('*').eq('call_sid', sid).execute()
                 if ana.data:
                     d = ana.data[0]
@@ -252,10 +265,11 @@ elif page == "CRM (Pipeline)":
                     st.markdown(f"### Sentimento: :{color}[{d['sentiment']}]")
                     st.info(d['summary'])
                     for t in (d['tags'] or []): st.markdown(f"`{t}`")
-                elif st.button("✨ Analisar com IA"):
+                elif st.button("✨ Analisar com IA", key="btn_ai_analise"):
                     with st.spinner("Analisando..."):
                         if ai_service.process_call(sid, c['recording_url']): st.rerun()
-            else: st.warning("Sem gravações.")
+            else: 
+                st.warning("Nenhuma gravação válida encontrada para este lead.")
 
     # Colunas Kanban
     cols = st.columns(len(stages))
@@ -270,7 +284,8 @@ elif page == "CRM (Pipeline)":
                     
                     # Exibe hora local
                     dt_local = deal['last_activity_local']
-                    is_recent = (datetime.now(LOCAL_TZ) - dt_local).total_seconds() < 3600
+                    # Comparação segura com timezone
+                    is_recent = (datetime.now(timezone.utc) - pd.to_datetime(deal['last_activity_at']).replace(tzinfo=timezone.utc)).total_seconds() < 3600
                     icon = "🔥" if is_recent else "🕒"
                     st.caption(f"{icon} {dt_local.strftime('%d/%m %H:%M')}")
                     
@@ -337,13 +352,11 @@ elif page == "Chamadas":
 elif page == "Gravações":
     st.title("Gravações")
     
-    # Busca direta para aplicar filtro de not null recording
     start = datetime.now(timezone.utc) - timedelta(days=7)
     res = supabase.table('calls').select('*').not_.is_('recording_url', 'null').gte('created_at', start.isoformat()).order('created_at', desc=True).execute()
     
     if res.data:
         recs = pd.DataFrame(res.data)
-        # Converter para local
         recs = convert_to_local(recs, 'created_at')
         
         st.metric("Total (7 dias)", len(recs))
@@ -388,7 +401,6 @@ elif page == "Analytics Avançado":
     st.title("Analytics")
     df = get_calls()
     if not df.empty:
-        # Agrupa pela hora LOCAL
         df['Hora'] = df['created_at'].dt.hour
         st.bar_chart(df['Hora'].value_counts().sort_index())
 
