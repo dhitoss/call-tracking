@@ -213,7 +213,44 @@ class DatabaseService:
             logger.error(f"❌ Error logging interaction: {e}")
             return False
 
+    # ========================================================================
+    # 5. TRACKING DNI E UTM
+    # ========================================================================
 
+    def get_marketing_performance(self):
+        """
+        Retorna performance agrupada por Tracking Source (UTMs).
+        Cruza tabela de sources com calls e deals.
+        """
+        try:
+            # 1. Busca todas as fontes
+            sources = self.client.table('tracking_sources').select('*').execute().data
+            
+            if not sources: return []
+            
+            performance = []
+            for s in sources:
+                # Contar chamadas para esta fonte
+                calls = self.client.table('calls').select('call_sid', count='exact').eq('tracking_source_id', s['id']).execute()
+                
+                # Contar leads gerados (deals associados a contatos dessas chamadas é complexo no MVP, 
+                # vamos focar em chamadas primeiro)
+                
+                performance.append({
+                    "Source": s.get('utm_source', 'Direto'),
+                    "Campaign": s.get('utm_campaign', '-'),
+                    "Medium": s.get('utm_medium', '-'),
+                    "Phone": s.get('tracking_number'),
+                    "Calls": calls.count or 0,
+                    "Last Active": s.get('last_call_at')
+                })
+            
+            # Ordenar por volume de chamadas
+            return sorted(performance, key=lambda x: x['Calls'], reverse=True)
+            
+        except Exception as e:
+            logger.error(f"Marketing stats error: {e}")
+            return []
 @lru_cache()
 def get_database_service() -> DatabaseService:
     return DatabaseService()
