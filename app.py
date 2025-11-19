@@ -1,8 +1,6 @@
 """
-Call Tracking Dashboard v3.5
-- Fix: Remoção de AudioColumn (incompatível) -> Volta para Layout de Lista Expansível
-- Fix: SyntaxWarning no Regex do JavaScript
-- Core: Sistema unificado de Ligações
+Call Tracking Dashboard v3.5.1
+- Fix: AttributeError em metadata nulo na Timeline
 """
 import streamlit as st
 import pandas as pd
@@ -145,7 +143,12 @@ elif page == "CRM":
             for e in db_service.get_contact_timeline(cid):
                 dt = pd.to_datetime(e['created_at']).replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).strftime('%d/%m %H:%M')
                 st.markdown(f"**{dt}** - {e['description']}")
-                if e.get('metadata', {}).get('recording_url'): st.audio(e['metadata']['recording_url'])
+                
+                # FIX: Verificação segura de metadata
+                meta = e.get('metadata') or {}
+                if isinstance(meta, dict) and meta.get('recording_url'): 
+                    st.audio(meta['recording_url'])
+                    
         with t2:
             c_res = supabase.table('calls').select('*').eq('from_number', contact['phone_number']).ilike('recording_url', 'http%').order('created_at', desc=True).limit(1).execute()
             if not c_res.data: c_res = supabase.table('calls').select('*').eq('to_number', contact['phone_number']).ilike('recording_url', 'http%').order('created_at', desc=True).limit(1).execute()
@@ -169,13 +172,8 @@ elif page == "CRM":
                     ns = st.selectbox("Mover", s_names, index=s_names.index(s['name']), key=f"mv_{d['id']}", label_visibility="collapsed")
                     if ns != s['name']: db_service.update_deal_stage(d['id'], s_map[ns]); st.toast("Movido"); time.sleep(0.5); st.rerun()
 
-# ============================================================================
-# PÁGINA UNIFICADA: LIGAÇÕES
-# ============================================================================
 elif page == "Ligações":
     st.title("Histórico de Ligações")
-    
-    # Filtros
     c1, c2, c3, c4 = st.columns(4)
     with c1: period = st.selectbox("Período", [1, 7, 30, 60], index=2)
     with c2: status_filter = st.selectbox("Status", ["Todos", "completed", "missed", "busy"])
@@ -184,27 +182,22 @@ elif page == "Ligações":
     
     df = get_calls(current_org_id, days=period)
     
-    # Aplica Filtros
     if not df.empty:
         if status_filter != "Todos": df = df[df['status'] == status_filter]
         if search: df = df[df['from_number'].astype(str).str.contains(search) | df['to_number'].astype(str).str.contains(search)]
         if tag_filter: df = df[df['tags'].isin(tag_filter)]
     
     if not df.empty:
-        # KPIs
         k1, k2, k3 = st.columns(3)
         k1.metric("Listadas", len(df))
         k2.metric("Gravadas", len(df[df['recording_url'].notna()]))
         k3.metric("Duração Média", format_duration(df['duration'].mean()))
         st.divider()
 
-        # LISTAGEM (Estilo Cards Expansíveis - Mais Robusto)
-        # Substitui o data_editor problemático
         st.caption("Clique para expandir, ouvir e classificar.")
         
         for idx, row in df.iterrows():
             tag = row['tags']
-            # Ícone de Tag Colorida
             tag_display = "⬜ Classificar"
             if tag and tag in TAG_COLORS:
                 tag_display = f"🏷️ {tag}"
@@ -214,39 +207,22 @@ elif page == "Ligações":
             
             with st.expander(header_text):
                 col1, col2, col3 = st.columns([1, 1, 1])
-                
                 with col1:
                     st.markdown(f"**De:** `{row['from_number']}`")
                     st.markdown(f"**Para:** `{row['to_number']}`")
                     st.caption(f"Status: {row['status']} | Duração: {format_duration(row['duration'])}")
-
                 with col2:
-                    if row['recording_url']:
-                        st.audio(row['recording_url'])
-                    else:
-                        st.info("Sem gravação")
-
+                    if row['recording_url']: st.audio(row['recording_url'])
+                    else: st.info("Sem gravação")
                 with col3:
-                    # Seletor de Tag (Salva ao mudar)
                     current_idx = TAG_OPTIONS.index(tag) if tag in TAG_OPTIONS else 0
-                    new_tag = st.selectbox(
-                        "Classificação",
-                        ["Limpar"] + TAG_OPTIONS,
-                        index=current_idx + 1 if tag in TAG_OPTIONS else 0,
-                        key=f"tag_{row['call_sid']}",
-                        label_visibility="collapsed"
-                    )
-                    
+                    new_tag = st.selectbox("Classificação", ["Limpar"] + TAG_OPTIONS, index=current_idx + 1 if tag in TAG_OPTIONS else 0, key=f"tag_{row['call_sid']}", label_visibility="collapsed")
                     val = new_tag if new_tag != "Limpar" else None
                     if val != tag:
                         db_service.update_call_tag(row['call_sid'], val)
-                        st.toast(f"Salvo: {val}")
-                        time.sleep(0.5)
-                        st.rerun()
-                    
+                        st.toast(f"Salvo: {val}"); time.sleep(0.5); st.rerun()
                     if tag in TAG_COLORS:
                         st.markdown(f"<span class='tag-badge' style='background:{TAG_COLORS[tag]}'>{tag}</span>", unsafe_allow_html=True)
-
     else:
         st.info("Nenhuma chamada encontrada.")
 
@@ -274,8 +250,7 @@ elif page == "Tracking":
         base=st.text_input("Site"); src=st.selectbox("Source", ["google","fb"]); num=st.text_input("Tel")
         if st.button("Gerar"): st.code(f"{base}?utm_source={src}&phone={num}")
     with t2:
-        # Script DNI com Raw String (r"") para corrigir SyntaxWarning
-        js = r"""<script>
+        st.code("""<script>
 function getP(n){return decodeURIComponent((new RegExp('[?|&]'+n+'=([^&;]+?)(&|#|;|$)').exec(location.search)||[,""])[1].replace(/\+/g,'%20'))||null}
 window.onload=function(){
   var p = getP('phone');
@@ -285,8 +260,7 @@ window.onload=function(){
     console.log("DNI: Phone changed to " + p);
   }
 }
-</script>"""
-        st.code(js, language="html")
+</script>""", language="html")
     with t3:
         perf = db_service.get_marketing_performance(current_org_id)
         if perf: st.dataframe(pd.DataFrame(perf))
@@ -302,7 +276,6 @@ elif page == "Admin Global" and user_role == 'super_admin':
                 for i in (ed['name']!=df_o['name']).index[ed['name']!=df_o['name']]:
                     db_service.update_organization_name(ed.loc[i]['id'], ed.loc[i]['name'])
                 st.toast("Salvo!"); time.sleep(0.5); st.rerun()
-    
     st.divider()
     with st.form("new_org"):
         nm = st.text_input("Nova Clínica")
